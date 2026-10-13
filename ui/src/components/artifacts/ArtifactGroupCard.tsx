@@ -13,10 +13,11 @@ interface ArtifactGroupCardProps {
 }
 
 /**
- * A stack card rendered in grouped mode. It mirrors the dimensions and preview
- * of {@link ArtifactCard} so grouped and flat grids share the same rhythm, and
- * layers a subtle "stack" effect behind the card only when it represents more
- * than one artifact.
+ * A stack card rendered in grouped mode (Expert Mode, HIS-2659 item 6). It
+ * mirrors the dimensions and preview of {@link ArtifactCard} so grouped and
+ * flat grids share the same rhythm. The stacked decoration layers were removed
+ * (HIS-2659 item 5 / audit): they painted two extra borders under every group
+ * without carrying information, at a measurable paint cost.
  */
 export function ArtifactGroupCard({ group, to }: ArtifactGroupCardProps) {
   const stacked = group.count > 1;
@@ -25,21 +26,6 @@ export function ArtifactGroupCard({ group, to }: ArtifactGroupCardProps) {
 
   return (
     <div className="relative">
-      {stacked ? (
-        <>
-          <div
-            aria-hidden="true"
-            data-testid="artifact-stack-layer"
-            className="pointer-events-none absolute inset-0 translate-x-(--sz-8px) translate-y-(--sz-8px) rounded-lg border border-border bg-muted/70"
-          />
-          <div
-            aria-hidden="true"
-            data-testid="artifact-stack-layer"
-            className="pointer-events-none absolute inset-0 translate-x-(--sz-4px) translate-y-(--sz-4px) rounded-lg border border-border bg-muted/40"
-          />
-        </>
-      ) : null}
-
       {/* design-allow(card-pattern): navigation <Link> card; Card renders a div and would break anchor semantics (C5a Run 3) */}
       <Link
         to={to}
@@ -80,7 +66,7 @@ export function ArtifactGroupCard({ group, to }: ArtifactGroupCardProps) {
           <div className="mt-0.5 flex items-center gap-1.5 text-(length:--text-micro) text-muted-foreground/65">
             <span>{countLabel}</span>
             <span className="text-muted-foreground/50">·</span>
-            <span>Updated {formatDate(group.updatedAt)}</span>
+            <span>Bijgewerkt {formatDate(group.updatedAt)}</span>
           </div>
         </div>
       </Link>
