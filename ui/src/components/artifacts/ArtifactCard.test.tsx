@@ -24,6 +24,8 @@ vi.mock("@/lib/router", () => ({
 }));
 
 import { ArtifactCard } from "./ArtifactCard";
+import { ArtifactCardSkeleton, ArtifactRecentListSkeleton } from "./ArtifactCardSkeleton";
+import { ArtifactRecentList } from "./ArtifactRecentList";
 import type { CompanyArtifact } from "@/api/artifacts";
 
 /** Local noon, so the rendered nl-BE label is the same in every timezone. */
@@ -354,5 +356,161 @@ describe("ArtifactCard", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+/** Card body = the last child of the card root (`article` / skeleton wrapper). */
+function bodyOf(markup: string, rootSelector: string): HTMLElement {
+  const host = document.createElement("div");
+  host.innerHTML = markup;
+  const root = host.querySelector(rootSelector) as HTMLElement;
+  expect(root).not.toBeNull();
+  return root.lastElementChild as HTMLElement;
+}
+
+describe("ArtifactCardSkeleton", () => {
+  it("reserves the same rows as a loaded card that carries a chip and an origin line", () => {
+    // A card that renders *every* conditional row: red chip (`turnTerminalState`)
+    // and the origin line (`issue.identifier · agent`).
+    const cardMarkup = renderToStaticMarkup(
+      <ArtifactCard artifact={makeArtifact({ turnTerminalState: "failed" })} />,
+    );
+    const skeletonMarkup = renderToStaticMarkup(<ArtifactCardSkeleton />);
+
+    expect(cardMarkup).toContain('data-status-tone="red"');
+    expect(cardMarkup).toContain("PAP-10306 · ClaudeCoder");
+
+    const cardBody = bodyOf(cardMarkup, '[data-testid="artifact-card"]');
+    const skeletonBody = bodyOf(skeletonMarkup, '[data-testid="artifact-card-skeleton"]');
+
+    // Same body rhythm, so the two only differ in their contents.
+    expect(cardBody.className).toBe("flex flex-1 flex-col gap-1 p-3");
+    expect(skeletonBody.className).toBe(cardBody.className);
+
+    // chip row + title + meta row + origin line + action row.
+    expect(cardBody.children.length).toBe(5);
+    expect(skeletonBody.children.length).toBe(cardBody.children.length);
+
+    // Each row of the card keeps its height in the placeholder: chip row
+    // (min-h-5), title (h-5), meta row (min-h-4), action row (h-9 buttons).
+    expect((cardBody.children[0] as HTMLElement).className).toContain("min-h-5");
+    expect((skeletonBody.children[0] as HTMLElement).className).toContain("min-h-5");
+    expect((cardBody.children[1] as HTMLElement).className).toContain("h-5");
+    expect(skeletonBody.children[1].className).toContain("h-5");
+    expect((cardBody.children[2] as HTMLElement).className).toContain("min-h-4");
+    expect((skeletonBody.children[2] as HTMLElement).className).toContain("min-h-4");
+    expect((cardBody.children[4] as HTMLElement).className).toContain("mt-1.5");
+    expect(skeletonBody.children[4].className).toContain("mt-1.5");
+    for (const placeholder of skeletonBody.children[4].children) {
+      expect((placeholder as HTMLElement).className).toContain("h-9");
+    }
+  });
+
+  it("gives the chip placeholder the chip's own box, not a guessed height", () => {
+    // The real chip is a `--text-micro` line box (16.5px) plus `py-0.5` and a
+    // 1px border = 22.5px. An `h-5` placeholder (20px) would make the row grow
+    // by 2.5px per card as soon as the data lands. Copying the chip's own box
+    // classes is what makes the reservation exact; the line box comes from an
+    // invisible label, so no raw pixel value is needed.
+    const cardMarkup = renderToStaticMarkup(
+      <ArtifactCard artifact={makeArtifact({ turnTerminalState: "failed" })} />,
+    );
+    const skeletonBody = bodyOf(
+      renderToStaticMarkup(<ArtifactCardSkeleton />),
+      '[data-testid="artifact-card-skeleton"]',
+    );
+
+    const host = document.createElement("div");
+    host.innerHTML = cardMarkup;
+    const chip = host.querySelector('[data-testid="artifact-status-chip"]') as HTMLElement;
+    const chipRow = skeletonBody.children[0] as HTMLElement;
+    const placeholder = chipRow.firstElementChild as HTMLElement;
+
+    const boxClasses = ["inline-flex", "items-center", "gap-1", "rounded-full", "border", "px-2", "py-0.5"];
+    for (const boxClass of boxClasses) {
+      expect(chip.className.split(/\s+/)).toContain(boxClass);
+      expect(placeholder.className.split(/\s+/)).toContain(boxClass);
+    }
+    expect(chip.className).toContain("text-(length:--text-micro)");
+    expect(placeholder.className).toContain("text-(length:--text-micro)");
+    // The line box itself: an invisible label inside the placeholder.
+    const label = placeholder.querySelector("span") as HTMLElement;
+    expect(label.className).toContain("invisible");
+    expect(label.textContent?.length).toBeGreaterThan(0);
+  });
+
+  it("reserves the meta and origin lines with a text line box, not a bare h-4", () => {
+    // Both lines are `--text-micro` text in the loaded card, so their box is a
+    // line box (16.5px) rather than the 16px of `h-4`.
+    const skeletonBody = bodyOf(
+      renderToStaticMarkup(<ArtifactCardSkeleton />),
+      '[data-testid="artifact-card-skeleton"]',
+    );
+    const metaRow = skeletonBody.children[2] as HTMLElement;
+    const originLine = skeletonBody.children[3] as HTMLElement;
+
+    expect(metaRow.className).toContain("min-h-4");
+    expect(metaRow.className).toContain("items-center");
+    for (const line of [metaRow.firstElementChild as HTMLElement, originLine]) {
+      expect(line.className).toContain("text-(length:--text-micro)");
+      const label = line.querySelector("span") as HTMLElement;
+      expect(label.className).toContain("invisible");
+      expect(label.textContent?.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("keeps the reserved rows even when the payload has no status fields yet", () => {
+    // Before Deel B lands the real cards show neither chip nor origin, so the
+    // skeleton is deliberately the *taller* of the two: shrinking later is a
+    // cheaper mistake than pushing the grid down.
+    const plainCard = bodyOf(
+      renderToStaticMarkup(<ArtifactCard artifact={makeArtifact({ issue: null, createdByAgent: null })} />),
+      '[data-testid="artifact-card"]',
+    );
+    const skeletonBody = bodyOf(
+      renderToStaticMarkup(<ArtifactCardSkeleton />),
+      '[data-testid="artifact-card-skeleton"]',
+    );
+    expect(skeletonBody.children.length).toBeGreaterThan(plainCard.children.length);
+  });
+
+  it("mirrors the recent shelf rows so the shelf does not change height on load", () => {
+    const markup = renderToStaticMarkup(<ArtifactRecentListSkeleton />);
+    const host = document.createElement("div");
+    host.innerHTML = markup;
+    const rows = host.querySelectorAll('[data-testid="artifact-recent-skeleton"] > li');
+    expect(rows.length).toBe(5);
+    // Same row padding as the real shelf: `px-3 py-2`.
+    for (const row of rows) {
+      expect((row as HTMLElement).className).toContain("px-3");
+      expect((row as HTMLElement).className).toContain("py-2");
+    }
+
+    // The real row, with the chip that sets its height.
+    const realHost = document.createElement("div");
+    realHost.innerHTML = renderToStaticMarkup(
+      <ArtifactRecentList
+        artifacts={Array.from({ length: 5 }, (_, index) =>
+          makeArtifact({ id: `art-${index}`, turnTerminalState: "failed" }),
+        )}
+      />,
+    );
+    const realRow = realHost.querySelector(
+      '[data-testid="artifact-recent-list"] > li > a',
+    ) as HTMLElement;
+    const skeletonRow = rows[0] as HTMLElement;
+
+    // Same number of boxes per row: chip, title, meta (sm and up), time.
+    expect(skeletonRow.children.length).toBe(realRow.children.length);
+
+    // And the chip placeholder copies the chip's own box, so the row keeps its
+    // 22.5px content instead of shrinking to the 20px of an `h-5` guess.
+    const chip = realRow.querySelector('[data-testid="artifact-status-chip"]') as HTMLElement;
+    const placeholder = skeletonRow.firstElementChild as HTMLElement;
+    for (const boxClass of ["inline-flex", "items-center", "gap-1", "rounded-full", "border", "px-2", "py-0.5"]) {
+      expect(chip.className.split(/\s+/)).toContain(boxClass);
+      expect(placeholder.className.split(/\s+/)).toContain(boxClass);
+    }
+    expect(placeholder.className).toContain("text-(length:--text-micro)");
   });
 });

@@ -588,6 +588,13 @@ describe("Artifacts page", () => {
     expect(skeletonGrid?.className).toContain("md:grid-cols-2");
     expect(skeletonGrid?.className).toContain("xl:grid-cols-3");
 
+    // The first paint mirrors the loaded page (section headings + recent shelf),
+    // so the grid does not slide down when the data lands (criterion e).
+    expect(container.querySelector('[data-testid="artifact-recent-skeleton"]')).not.toBeNull();
+    const headings = Array.from(container.querySelectorAll("h2")).map((node) => node.textContent);
+    expect(headings).toContain("Recente artifacts");
+    expect(headings).toContain("Alle artifacts");
+
     pending.resolve({ artifacts: [sampleArtifact()], nextCursor: null });
 
     await waitForAssertion(() => {
