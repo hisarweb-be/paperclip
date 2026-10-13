@@ -10,6 +10,7 @@ import {
   createDb,
   documentMemberships,
   documents,
+  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   heartbeatRuns,
   issueAttachments,
   issueComments,
@@ -37,6 +38,38 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
+// The wire shape of one artifact: the fields the artifacts view draws plus the
+// size, type and health fields. Kept explicit so a re-added fat field such as
+// `metadata` (which duplicated openPath/downloadPath) fails the test.
+const ARTIFACT_RESPONSE_KEYS = [
+  "byteSize",
+  "contentPath",
+  "contentType",
+  "createdAt",
+  "createdByAgent",
+  "createdByRunId",
+  "downloadPath",
+  "healthStatus",
+  "href",
+  "id",
+  "isPrimary",
+  "issue",
+  "issueId",
+  "mediaKind",
+  "openPath",
+  "originalFilename",
+  "previewText",
+  "project",
+  "projectId",
+  "provider",
+  "reviewState",
+  "source",
+  "status",
+  "summary",
+  "title",
+  "updatedAt",
+];
+
 function createStorageService(files: Record<string, Buffer> = {}): StorageService {
   return {
     provider: "local_disk",
@@ -63,7 +96,10 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-company-artifacts-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+    // Starting the cluster and applying every pending migration takes about
+    // 37s on a slow host, so the bound shared by the db package is used here
+    // instead of the 20s that fits a fast CI runner.
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
     await db.delete(documentMemberships);
@@ -155,6 +191,7 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
         title: "Review Notes",
         latestBody: "# Review\n\nAgent-created review document with useful details.",
         createdByAgentId: agentId,
+        createdAt: new Date("2026-01-04T00:00:00.000Z"),
         updatedAt: new Date("2026-01-04T00:00:00.000Z"),
       },
       {
@@ -163,6 +200,7 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
         title: "Continuation Summary",
         latestBody: "System handoff",
         createdByAgentId: agentId,
+        createdAt: new Date("2026-01-05T00:00:00.000Z"),
         updatedAt: new Date("2026-01-05T00:00:00.000Z"),
       },
       {
@@ -171,6 +209,7 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
         title: "User Upload Notes",
         latestBody: "User-authored context",
         createdByUserId: "user-1",
+        createdAt: new Date("2026-01-06T00:00:00.000Z"),
         updatedAt: new Date("2026-01-06T00:00:00.000Z"),
       },
       {
@@ -179,6 +218,7 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
         title: "Plan",
         latestBody: "Human-approved plan",
         createdByUserId: "user-1",
+        createdAt: new Date("2026-01-08T00:00:00.000Z"),
         updatedAt: new Date("2026-01-08T00:00:00.000Z"),
       },
       {
@@ -187,6 +227,7 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
         title: "Other Company Plan",
         latestBody: "Must not cross tenants",
         createdByAgentId: otherAgentId,
+        createdAt: new Date("2026-01-07T00:00:00.000Z"),
         updatedAt: new Date("2026-01-07T00:00:00.000Z"),
       },
     ]);
@@ -293,6 +334,7 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
         companyId,
         issueId,
         assetId: "13131313-1313-4131-8131-131313131313",
+        createdAt: new Date("2026-01-03T00:00:00.000Z"),
         updatedAt: new Date("2026-01-03T00:00:00.000Z"),
       },
       {
@@ -300,12 +342,14 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
         companyId,
         issueId,
         assetId: "14141414-1414-4141-8141-141414141414",
+        createdAt: new Date("2026-01-02T00:00:00.000Z"),
         updatedAt: new Date("2026-01-02T00:00:00.000Z"),
       },
       {
         companyId,
         issueId,
         assetId: "15151515-1515-4151-8151-151515151515",
+        createdAt: new Date("2026-01-08T00:00:00.000Z"),
         updatedAt: new Date("2026-01-08T00:00:00.000Z"),
       },
       {
@@ -313,12 +357,14 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
         issueId,
         assetId: "16161616-1616-4161-8161-161616161616",
         issueCommentId: "12121212-1212-4121-8121-121212121212",
+        createdAt: new Date("2026-01-09T00:00:00.000Z"),
         updatedAt: new Date("2026-01-09T00:00:00.000Z"),
       },
       {
         companyId,
         issueId,
         assetId: "17171717-1717-4171-8171-171717171717",
+        createdAt: new Date("2026-01-01T00:00:00.000Z"),
         updatedAt: new Date("2026-01-01T00:00:00.000Z"),
       },
     ]);
@@ -343,10 +389,64 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
         originalFilename: "primary-cut.mp4",
       },
       createdByRunId: runId,
+      createdAt: new Date("2026-01-02T12:00:00.000Z"),
       updatedAt: new Date("2026-01-02T12:00:00.000Z"),
     });
 
     return { companyId, otherCompanyId, projectId, issueId, secondIssueId, otherIssueId, otherRunId };
+  }
+
+  /**
+   * A company with `count` agent-authored documents, one second apart, so the
+   * createdAt ordering and the keyset cursor can be exercised against a list
+   * longer than the former 64 item ceiling.
+   */
+  async function seedManyDocuments(count: number) {
+    const companyId = "1a111111-1111-4111-8111-111111111111";
+    const agentId = "2a222222-2222-4222-8222-222222222222";
+    const projectId = "3a333333-3333-4333-8333-333333333333";
+    const issueId = "4a444444-4444-4444-8444-444444444444";
+    const base = Date.parse("2026-03-01T00:00:00.000Z");
+    const documentIds = Array.from(
+      { length: count },
+      (_, index) => `1b111111-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+    );
+    const timestampOf = (index: number) => new Date(base + index * 1000);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "PageCo",
+      issuePrefix: "PG",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Pager", role: "engineer" });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Paging", status: "in_progress" });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      identifier: "PG-1",
+      title: "Paged renders",
+      status: "done",
+      priority: "medium",
+    });
+    await db.insert(documents).values(documentIds.map((id, index) => ({
+      id,
+      companyId,
+      title: `Render ${index + 1}`,
+      latestBody: `Body ${index + 1}`,
+      createdByAgentId: agentId,
+      createdAt: timestampOf(index),
+      updatedAt: timestampOf(index),
+    })));
+    await db.insert(issueDocuments).values(documentIds.map((documentId, index) => ({
+      companyId,
+      issueId,
+      documentId,
+      key: `render-${index + 1}`,
+    })));
+
+    return { companyId, issueId, documentIds };
   }
 
   it("returns only the caller's starred documents, including plan and human-authored documents, with cursor order", async () => {
@@ -520,6 +620,7 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
       companyId,
       issueId,
       assetId: "acacacac-acac-4cac-8cac-acacacacacac",
+      createdAt: new Date("2026-01-20T00:00:00.000Z"),
       updatedAt: new Date("2026-01-20T00:00:00.000Z"),
     });
 
@@ -535,6 +636,7 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
       summary: "Filler artifact to push the attachment-backed work product past the fetch window",
       metadata: { contentType: "video/mp4" },
       createdByRunId: "99999999-9999-4999-8999-999999999999",
+      createdAt: new Date(`2026-01-10T00:${String(index).padStart(2, "0")}:00.000Z`),
       updatedAt: new Date(`2026-01-10T00:${String(index).padStart(2, "0")}:00.000Z`),
     }));
     await db.insert(issueWorkProducts).values([
@@ -559,6 +661,7 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
           originalFilename: "late-render.mp4",
         },
         createdByRunId: "99999999-9999-4999-8999-999999999999",
+        createdAt: new Date("2026-01-01T12:00:00.000Z"),
         updatedAt: new Date("2026-01-01T12:00:00.000Z"),
       },
     ]);
@@ -585,6 +688,7 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
       summary: "Historically malformed run attribution",
       metadata: { contentType: "text/plain" },
       createdByRunId: otherRunId,
+      createdAt: new Date("2026-01-10T00:00:00.000Z"),
       updatedAt: new Date("2026-01-10T00:00:00.000Z"),
     });
 
@@ -614,6 +718,7 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
       title: "Forged Link Document",
       latestBody: "This row is company-owned but points at a foreign issue.",
       createdByAgentId: "33333333-3333-4333-8333-333333333333",
+      createdAt: new Date("2026-01-30T00:00:00.000Z"),
       updatedAt: new Date("2026-01-30T00:00:00.000Z"),
     });
     await db.insert(issueDocuments).values({
@@ -638,6 +743,7 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
       companyId,
       issueId: otherIssueId,
       assetId: "1e1e1e1e-1e1e-4e1e-8e1e-1e1e1e1e1e1e",
+      createdAt: new Date("2026-01-29T00:00:00.000Z"),
       updatedAt: new Date("2026-01-29T00:00:00.000Z"),
     });
     await db.insert(issueWorkProducts).values({
@@ -651,6 +757,7 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
       summary: "This row is company-owned but points at a foreign issue.",
       metadata: { contentType: "text/plain" },
       createdByRunId: "99999999-9999-4999-8999-999999999999",
+      createdAt: new Date("2026-01-28T00:00:00.000Z"),
       updatedAt: new Date("2026-01-28T00:00:00.000Z"),
     });
 
@@ -797,6 +904,7 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
       companyId,
       issueId: grandchildIssueId,
       assetId: "24242424-2424-4242-8242-242424242424",
+      createdAt: new Date("2026-01-05T00:00:00.000Z"),
       updatedAt: new Date("2026-01-05T00:00:00.000Z"),
     });
 
@@ -867,6 +975,166 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
       selectedGroup: null,
       nextCursor: null,
     });
+  });
+
+  it("pages the whole company list in 50 item pages with a keyset cursor and no 64 item ceiling", async () => {
+    const { companyId } = await seedManyDocuments(120);
+    const app = express();
+    app.use((req, _res, next) => {
+      req.actor = {
+        type: "board",
+        userId: "user-1",
+        source: "session",
+        companyIds: [companyId],
+        memberships: [{ companyId, membershipRole: "viewer", status: "active" }],
+      };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, createStorageService()));
+    app.use(errorHandler);
+
+    const pages: Array<{ artifacts: Array<Record<string, unknown>>; nextCursor: string | null }> = [];
+    let cursor: string | undefined;
+    do {
+      const suffix = cursor ? `&cursor=${encodeURIComponent(cursor)}` : "";
+      const response = await request(app).get(`/api/companies/${companyId}/artifacts?limit=50${suffix}`);
+      expect(response.status).toBe(200);
+      pages.push(response.body);
+      cursor = response.body.nextCursor ?? undefined;
+    } while (cursor);
+
+    expect(pages.map((page) => page.artifacts.length)).toEqual([50, 50, 20]);
+    expect(pages[2].nextCursor).toBeNull();
+
+    const artifacts = pages.flatMap((page) => page.artifacts);
+    const titles = artifacts.map((artifact) => artifact.title);
+    // All 120 artifacts arrive, newest first: none of them disappears behind a
+    // 64 item cap and no cursor page repeats or skips one.
+    expect(titles).toEqual(Array.from({ length: 120 }, (_, index) => `Render ${120 - index}`));
+    expect(new Set(titles).size).toBe(120);
+
+    for (const artifact of artifacts) {
+      expect(artifact.createdAt).toEqual(expect.any(String));
+      expect(artifact.contentType).toEqual("text/markdown");
+      expect(artifact).toHaveProperty("byteSize");
+      expect(artifact).not.toHaveProperty("metadata");
+      expect(Object.keys(artifact).sort()).toEqual(ARTIFACT_RESPONSE_KEYS);
+    }
+  });
+
+  it("orders the flat list on createdAt in both directions", async () => {
+    const { companyId } = await seedManyDocuments(5);
+    const service = companyArtifactsService(db, createStorageService());
+
+    const descending = await service.list(companyId, { limit: 10 });
+    expect(descending.artifacts.map((artifact) => artifact.title)).toEqual([
+      "Render 5",
+      "Render 4",
+      "Render 3",
+      "Render 2",
+      "Render 1",
+    ]);
+
+    const ascending = await service.list(companyId, { limit: 10, sort: "createdAt:asc" });
+    expect(ascending.artifacts.map((artifact) => artifact.title)).toEqual([
+      "Render 1",
+      "Render 2",
+      "Render 3",
+      "Render 4",
+      "Render 5",
+    ]);
+  });
+
+  it("rejects a cursor that does not belong to the requested ordering", async () => {
+    const { companyId } = await seedManyDocuments(5);
+    const service = companyArtifactsService(db, createStorageService());
+
+    const firstPage = await service.list(companyId, { limit: 2 });
+    expect(firstPage.nextCursor).toEqual(expect.any(String));
+
+    await expect(service.list(companyId, {
+      limit: 2,
+      sort: "createdAt:asc",
+      cursor: firstPage.nextCursor ?? undefined,
+    })).rejects.toThrow(/Cursor does not match the requested sort order or starred filter/);
+
+    await expect(service.list(
+      companyId,
+      { limit: 2, starred: true, cursor: firstPage.nextCursor ?? undefined },
+      { userId: "user-1" },
+    )).rejects.toThrow(/Cursor does not match the requested sort order or starred filter/);
+
+    await expect(service.list(companyId, { limit: 2, cursor: "not-a-cursor" }))
+      .rejects.toThrow(/Invalid artifacts cursor/);
+  });
+
+  it("reports the size, type and failure state of an artifact without a second call", async () => {
+    const { companyId, projectId, issueId } = await seedArtifacts();
+    await db.insert(issueWorkProducts).values({
+      id: "abababab-abab-4bab-8bab-abababababac",
+      companyId,
+      projectId,
+      issueId,
+      type: "artifact",
+      provider: "paperclip",
+      title: "Failed Render",
+      status: "failed",
+      reviewState: "changes_requested",
+      healthStatus: "failed",
+      summary: "Render failed after three attempts",
+      metadata: {
+        attachmentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        contentType: "video/mp4",
+        byteSize: 200,
+        contentPath: `/api/attachments/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/content`,
+        openPath: `/api/attachments/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/content`,
+        downloadPath: `/api/attachments/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/content?download=1`,
+        originalFilename: "primary-cut.mp4",
+      },
+      createdByRunId: "99999999-9999-4999-8999-999999999999",
+      createdAt: new Date("2026-01-11T00:00:00.000Z"),
+      updatedAt: new Date("2026-01-11T00:00:00.000Z"),
+    });
+
+    const service = companyArtifactsService(db, createStorageService());
+    const failed = (await service.list(companyId, { q: "Failed Render", limit: 10 })).artifacts[0];
+
+    expect(failed.title).toBe("Failed Render");
+    expect(failed.healthStatus).toBe("failed");
+    expect(failed.status).toBe("failed");
+    expect(failed.reviewState).toBe("changes_requested");
+    expect(failed.byteSize).toBe(200);
+    expect(failed.contentType).toBe("video/mp4");
+    expect(failed.originalFilename).toBe("primary-cut.mp4");
+    expect(failed.provider).toBe("paperclip");
+    expect(failed.createdByRunId).toBe("99999999-9999-4999-8999-999999999999");
+    expect(failed.createdAt).toBe("2026-01-11T00:00:00.000Z");
+    expect(failed).not.toHaveProperty("metadata");
+    expect(Object.keys(failed).sort()).toEqual(ARTIFACT_RESPONSE_KEYS);
+
+    // Measured size of one item on the wire: 1225 bytes for this work product
+    // and 822 bytes for a document, against 814 and 554 bytes for the same two
+    // rows serialised without the twelve added fields. The item grew, because
+    // the previous projection returned no `metadata` key to drop (see the
+    // projection in the pre-change service) and every added field carries a
+    // value. The ceiling below is a regression guard on the wire size, not a
+    // claim that the item shrank.
+    const payloadBytes = JSON.stringify(failed).length;
+    expect(payloadBytes, `artifact payload is ${payloadBytes} bytes per item`).toBeLessThan(1600);
+
+    const attachment = (await service.list(companyId, { q: "notes.txt", limit: 10 })).artifacts[0];
+    expect(attachment).toMatchObject({
+      source: "attachment",
+      title: "notes.txt",
+      byteSize: 64,
+      contentType: "text/plain",
+      // An attachment has no server-side failure state, so it reports null
+      // rather than a made-up value.
+      healthStatus: null,
+      reviewState: null,
+      status: null,
+    });
+    expect(Object.keys(attachment).sort()).toEqual(ARTIFACT_RESPONSE_KEYS);
   });
 });
 

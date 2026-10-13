@@ -21,6 +21,14 @@ export const issueAttachments = pgTable(
   },
   (table) => ({
     companyIssueIdx: index("issue_attachments_company_issue_idx").on(table.companyId, table.issueId),
+    // Keyset pagination of the company artifacts list orders on
+    // (created_at, id) per company, so the cursor range scan has a matching
+    // index instead of sorting the table.
+    companyCreatedIdx: index("issue_attachments_company_created_idx").on(
+      table.companyId,
+      table.createdAt,
+      table.id,
+    ),
     issueCommentIdx: index("issue_attachments_issue_comment_idx").on(table.issueCommentId),
     originatingRunIdx: index("issue_attachments_originating_run_idx").on(
       table.originatingRunId,

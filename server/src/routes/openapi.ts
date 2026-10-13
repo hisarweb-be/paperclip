@@ -1996,6 +1996,8 @@ registry.registerPath({
   path: "/api/companies/{companyId}/artifacts",
   tags: ["companies"],
   summary: "List company artifacts",
+  description:
+    "Artifacts are ordered on createdAt (sort=createdAt:desc by default, tie-broken on the artifact id) and paged with nextCursor, which is a keyset cursor over that same pair. Pass nextCursor back as cursor to get the next page; a cursor is rejected when the sort order or starred filter changed between pages, so a page can never silently skip or repeat an artifact.",
   request: {
     params: z.object({ companyId: z.string() }),
     query: companyArtifactsQuerySchema,

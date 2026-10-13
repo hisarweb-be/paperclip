@@ -632,6 +632,7 @@ export type {
   CompanyArtifactIssueSummary,
   CompanyArtifactMediaKind,
   CompanyArtifactProjectSummary,
+  CompanyArtifactSort,
   CompanyArtifactSource,
   CompanyArtifactsResponse,
 } from "./artifact.js";

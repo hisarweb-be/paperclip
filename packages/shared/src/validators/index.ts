@@ -575,6 +575,7 @@ export {
   companyArtifactGroupSchema,
   companyArtifactMediaKindSchema,
   companyArtifactSchema,
+  companyArtifactSortSchema,
   companyArtifactSourceSchema,
   companyArtifactsQuerySchema,
   companyArtifactsResponseSchema,
