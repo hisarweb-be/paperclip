@@ -62,5 +62,13 @@ export const issueWorkProducts = pgTable(
       table.companyId,
       table.updatedAt,
     ),
+    // Keyset pagination of the company artifacts list orders on
+    // (created_at, id) per company, so the cursor range scan has a matching
+    // index instead of sorting the table.
+    companyCreatedIdx: index("issue_work_products_company_created_idx").on(
+      table.companyId,
+      table.createdAt,
+      table.id,
+    ),
   }),
 );
