@@ -428,10 +428,17 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
       if (cursor && (cursor.sort !== query.sort || cursor.starred !== query.starred)) {
         throw badRequest("Cursor does not match the requested sort order or starred filter");
       }
+      // The starred view is defined as "most recently starred first": it sorts
+      // and pages on `starredAt` and always runs `desc`, so a requested
+      // `sort=createdAt:asc` cannot flip it. The direction is forced here rather
+      // than only in the documents query because the SQL cursor condition, the
+      // in-memory sort and the cursor key all read `order.direction`; letting the
+      // request keep `asc` made the fetch descend while the sort ascended, which
+      // dropped one item and repeated another across pages.
       const order: ArtifactOrder = {
         sort: query.sort,
         starred: query.starred,
-        direction: query.sort === "createdAt:asc" ? "asc" : "desc",
+        direction: !query.starred && query.sort === "createdAt:asc" ? "asc" : "desc",
       };
 
       const fetchLimit = Math.min(query.limit + 1, COMPANY_ARTIFACTS_MAX_LIMIT + 1);
@@ -471,10 +478,9 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
         const documentSortDate = query.starred
           ? sql<Date>`${documentMemberships.starredAt}`
           : sql<Date>`${documents.createdAt}`;
-        const documentDirection: SortDirection = query.starred ? "desc" : order.direction;
         const documentCursor = groupBy
           ? undefined
-          : cursorCondition(documentSortDate, documentArtifactId, cursor, documentDirection);
+          : cursorCondition(documentSortDate, documentArtifactId, cursor, order.direction);
         if (documentCursor) documentConditions.push(documentCursor);
         if (groupBy === "task" && query.groupIssueId) documentConditions.push(eq(issues.id, query.groupIssueId));
         if (query.projectId) documentConditions.push(eq(issues.projectId, query.projectId));
@@ -550,7 +556,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
             ),
           )
           .where(and(...documentConditions))
-          .orderBy(...orderBySort(documentSortDate, documentArtifactId, documentDirection));
+          .orderBy(...orderBySort(documentSortDate, documentArtifactId, order.direction));
         const documentRows = await documentRowsQuery.limit(sourceFetchLimit);
 
         for (const row of documentRows) {

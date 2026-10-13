@@ -1045,6 +1045,53 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
     ]);
   });
 
+  it("pages the starred view without gaps or duplicates when sort=createdAt:asc is requested", async () => {
+    const { companyId, documentIds } = await seedManyDocuments(4);
+    // The star times run opposite to createdAt, so an `asc` that reaches only
+    // part of the path (the sort) while the fetch stays `desc` loses a document
+    // and repeats another. "Render 1" is starred last, "Render 4" first.
+    await db.insert(documentMemberships).values(documentIds.map((documentId, index) => ({
+      companyId,
+      documentId,
+      userId: "user-1",
+      starredAt: new Date(`2026-04-0${4 - index}T00:00:00.000Z`),
+    })));
+
+    const app = express();
+    app.use((req, _res, next) => {
+      req.actor = {
+        type: "board",
+        userId: "user-1",
+        source: "session",
+        companyIds: [companyId],
+        memberships: [{ companyId, membershipRole: "viewer", status: "active" }],
+      };
+      next();
+    });
+    app.use("/api/companies", companyRoutes(db, createStorageService()));
+    app.use(errorHandler);
+
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const suffix = cursor ? `&cursor=${encodeURIComponent(cursor)}` : "";
+      const response = await request(app).get(
+        `/api/companies/${companyId}/artifacts?starred=true&sort=createdAt:asc&limit=1${suffix}`,
+      );
+      expect(response.status).toBe(200);
+      // The starred view is "most recently starred first", so the ordering is
+      // the same on every page even though the caller asked for createdAt:asc.
+      expect(response.body.artifacts).toHaveLength(1);
+      seen.push(...response.body.artifacts.map((artifact: { id: string }) => artifact.id));
+      cursor = response.body.nextCursor ?? undefined;
+    } while (cursor);
+
+    // Every starred document comes back exactly once, newest star first: no
+    // page drops or repeats one.
+    expect(seen).toEqual(documentIds.map((documentId) => `document:${documentId}`));
+    expect(new Set(seen).size).toBe(seen.length);
+  });
+
   it("rejects a cursor that does not belong to the requested ordering", async () => {
     const { companyId } = await seedManyDocuments(5);
     const service = companyArtifactsService(db, createStorageService());
