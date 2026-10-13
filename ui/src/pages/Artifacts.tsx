@@ -13,7 +13,11 @@ import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { ArtifactCard } from "../components/artifacts/ArtifactCard";
 import { ArtifactGroupCard } from "../components/artifacts/ArtifactGroupCard";
-import { ArtifactCardSkeletonGrid, ARTIFACT_GRID_CLASS } from "../components/artifacts/ArtifactCardSkeleton";
+import {
+  ArtifactCardSkeletonGrid,
+  ArtifactRecentListSkeleton,
+  ARTIFACT_GRID_CLASS,
+} from "../components/artifacts/ArtifactCardSkeleton";
 import { ArtifactPriorityPanel } from "../components/artifacts/ArtifactPriorityPanel";
 import { ArtifactRecentList } from "../components/artifacts/ArtifactRecentList";
 import { ArtifactExpertPanel } from "../components/artifacts/ArtifactExpertPanel";
@@ -368,9 +372,41 @@ export function Artifacts() {
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       {isLoading ? (
-        // Item 8: card-shaped skeletons, same grid as the real cards, so the
-        // first data paint does not move anything (CLS).
-        <ArtifactCardSkeletonGrid />
+        // Item 8 + CLS (HIS-2659): the first paint mirrors the loaded page line
+        // for line, shelf and section headings included, with placeholders of
+        // the same height as a card that carries a chip. Nothing below the
+        // header moves when the data lands. The priority panel is the one part
+        // that cannot be reserved: item 5 keeps it invisible when there is
+        // nothing to do, so there is no height to reserve for it.
+        //
+        // The `key`s below are not decoration: React matches the two branches
+        // by key, so the very same <section> nodes stay in place and only their
+        // contents fill in. Without them React reuses the first skeleton
+        // section for the recents shelf, which moves that node up by the height
+        // of the section it replaces and shows up as a layout shift.
+        <>
+          <section key="artifact-recent" aria-labelledby="artifact-recent-heading" className="space-y-2">
+            <h2
+              id="artifact-recent-heading"
+              className="text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+            >
+              Recente artifacts
+            </h2>
+            <ArtifactRecentListSkeleton />
+          </section>
+
+          <section key="artifact-all" aria-labelledby="artifact-all-heading" className="space-y-3">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <h2
+                id="artifact-all-heading"
+                className="text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+              >
+                Alle artifacts
+              </h2>
+            </div>
+            <ArtifactCardSkeletonGrid />
+          </section>
+        </>
       ) : itemCount === 0 ? (
         <EmptyState
           icon={showGroupCards ? Layers : Package}
@@ -393,11 +429,13 @@ export function Artifacts() {
       ) : (
         <>
           {/* PRIORITEITSPANEEL -------------------------------------------- */}
-          {!showGroupCards ? <ArtifactPriorityPanel artifacts={sortedArtifacts} /> : null}
+          {!showGroupCards ? (
+            <ArtifactPriorityPanel key="artifact-priority" artifacts={sortedArtifacts} />
+          ) : null}
 
           {/* RECENTE ARTIFACTS ------------------------------------------- */}
           {!showGroupCards && sortedArtifacts.length > 0 ? (
-            <section aria-labelledby="artifact-recent-heading" className="space-y-2">
+            <section key="artifact-recent" aria-labelledby="artifact-recent-heading" className="space-y-2">
               <h2
                 id="artifact-recent-heading"
                 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground"
@@ -409,7 +447,7 @@ export function Artifacts() {
           ) : null}
 
           {/* ALLE ARTIFACTS ---------------------------------------------- */}
-          <section aria-labelledby="artifact-all-heading" className="space-y-3">
+          <section key="artifact-all" aria-labelledby="artifact-all-heading" className="space-y-3">
             <div className="flex flex-wrap items-baseline justify-between gap-2">
               <h2
                 id="artifact-all-heading"
