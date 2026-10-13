@@ -160,6 +160,35 @@ describe("ArtifactCard", () => {
     expect(bare).toContain('data-status-tone="none"');
   });
 
+  it("keeps the chip out of the preview box so it cannot cover preview text", () => {
+    const markup = renderToStaticMarkup(
+      <ArtifactCard
+        artifact={makeArtifact({
+          source: "document",
+          mediaKind: "document",
+          contentType: "text/markdown",
+          contentPath: null,
+          openPath: null,
+          downloadPath: null,
+          previewText: "90 dagenplan: 3 betalende klanten tegen 26 december.",
+          turnTerminalState: "failed",
+        })}
+      />,
+    );
+
+    const doc = new DOMParser().parseFromString(markup, "text/html");
+    const chip = doc.querySelector('[data-testid="artifact-status-chip"]');
+    const preview = doc.querySelector(".aspect-video");
+
+    expect(chip).not.toBeNull();
+    expect(preview).not.toBeNull();
+    // An absolutely positioned chip used to be painted over the preview and hid
+    // the first line of the excerpt, so the preview must not contain it.
+    expect(preview!.contains(chip!)).toBe(false);
+    expect(preview!.textContent).toContain("90 dagenplan");
+    expect(doc.body.textContent).toContain("Gefaald");
+  });
+
   // ---- performance items -------------------------------------------------
 
   it("reserves the preview box and lazy-loads the image", () => {

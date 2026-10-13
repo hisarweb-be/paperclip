@@ -259,14 +259,17 @@ export function ArtifactCard({ artifact }: ArtifactCardProps) {
 
       <div className="relative">
         <ArtifactPreview artifact={artifact} />
-        {status ? (
-          <div className="pointer-events-none absolute left-2 top-2 z-10">
-            <ArtifactStatusChip status={status} />
-          </div>
-        ) : null}
       </div>
 
       <div className="flex flex-1 flex-col gap-1 p-3">
+        {/* The chip lives in the card body, never on top of the preview: an
+            overlaid chip covered the first line of a text preview (HIS-2659). */}
+        {status ? (
+          <div className="flex min-h-5 items-center">
+            <ArtifactStatusChip status={status} />
+          </div>
+        ) : null}
+
         <h3
           className="h-5 truncate text-sm font-medium leading-5 text-foreground/85"
           title={filename}
