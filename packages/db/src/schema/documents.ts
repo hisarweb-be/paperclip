@@ -26,7 +26,13 @@ export const documents = pgTable(
   },
   (table) => ({
     companyUpdatedIdx: index("documents_company_updated_idx").on(table.companyId, table.updatedAt),
-    companyCreatedIdx: index("documents_company_created_idx").on(table.companyId, table.createdAt),
+    // Trailing `id` so the company artifacts keyset cursor on (created_at, id)
+    // can be served by this index without a sort.
+    companyCreatedIdx: index("documents_company_created_idx").on(
+      table.companyId,
+      table.createdAt,
+      table.id,
+    ),
     titleSearchIdx: index("documents_title_search_idx").using("gin", table.title.op("gin_trgm_ops")),
     bodySearchIdx: index("documents_latest_body_search_idx").using("gin", table.latestBody.op("gin_trgm_ops")),
   }),

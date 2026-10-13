@@ -1,5 +1,5 @@
 import { buffer } from "node:stream/consumers";
-import { and, desc, eq, inArray, isNotNull, isNull, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import {
@@ -18,12 +18,14 @@ import {
 import {
   attachmentArtifactWorkProductMetadataSchema,
   COMPANY_ARTIFACTS_MAX_LIMIT,
+  companyArtifactSortSchema,
   companyArtifactsQuerySchema,
   SYSTEM_ISSUE_DOCUMENT_KEYS,
   type CompanyArtifact,
   type CompanyArtifactGroup,
   type CompanyArtifactGroupBy,
   type CompanyArtifactMediaKind,
+  type CompanyArtifactSort,
   type CompanyArtifactsQuery,
   type CompanyArtifactsResponse,
 } from "@paperclipai/shared";
@@ -35,12 +37,35 @@ const PREVIEW_TEXT_MAX_LENGTH = 280;
 const GROUP_PREVIEW_ARTIFACT_LIMIT = 3;
 const GROUPED_ARTIFACT_FETCH_LIMIT = COMPANY_ARTIFACTS_MAX_LIMIT * 10;
 
+type SortDirection = "asc" | "desc";
+
+/**
+ * Keyset cursor on the ordering pair `(sortKey, id)`.
+ *
+ * `sortKey` is the active sort column value: `createdAt` for every list, and
+ * `starredAt` when the caller asks for `starred=true` (that view always shows
+ * the most recently starred documents first). `sort` and `starred` are recorded
+ * so a cursor cannot be replayed against a different ordering or filter set,
+ * which would silently skip or repeat rows.
+ */
 type ArtifactCursor = {
-  updatedAt: string;
+  v: 2;
+  sort: CompanyArtifactSort;
+  starred: boolean;
+  sortKey: string;
   id: string;
 };
 
+type ArtifactOrder = {
+  sort: CompanyArtifactSort;
+  starred: boolean;
+  direction: SortDirection;
+};
+
 type ArtifactGroupBy = Exclude<CompanyArtifactGroupBy, "none">;
+
+/** A group always carries the createdAt derived from its artifacts. */
+type ArtifactGroup = CompanyArtifactGroup & { createdAt: string };
 
 type IssueGroupingRow = {
   id: string;
@@ -58,28 +83,75 @@ function decodeCursor(cursor: string | undefined): ArtifactCursor | null {
   if (!cursor) return null;
   try {
     const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as Partial<ArtifactCursor>;
-    if (typeof parsed.id !== "string" || typeof parsed.updatedAt !== "string") {
+    const sort = companyArtifactSortSchema.safeParse(parsed.sort);
+    if (
+      parsed.v !== 2
+      || typeof parsed.id !== "string"
+      || typeof parsed.sortKey !== "string"
+      || typeof parsed.starred !== "boolean"
+      || !sort.success
+    ) {
       throw new Error("Invalid cursor");
     }
-    const date = new Date(parsed.updatedAt);
+    const date = new Date(parsed.sortKey);
     if (Number.isNaN(date.getTime())) {
       throw new Error("Invalid cursor date");
     }
-    return { id: parsed.id, updatedAt: date.toISOString() };
+    return { v: 2, id: parsed.id, sort: sort.data, starred: parsed.starred, sortKey: date.toISOString() };
   } catch {
     throw badRequest("Invalid artifacts cursor");
   }
 }
 
-function cursorCondition(updatedAt: SQL<Date>, artifactId: SQL<string>, cursor: ArtifactCursor | null) {
+function cursorCondition(
+  sortKeyColumn: SQL<Date>,
+  artifactId: SQL<string>,
+  cursor: ArtifactCursor | null,
+  direction: SortDirection,
+) {
   if (!cursor) return undefined;
-  return sql`(${updatedAt} < ${cursor.updatedAt}::timestamptz OR (${updatedAt} = ${cursor.updatedAt}::timestamptz AND ${artifactId} < ${cursor.id}))`;
+  const comparison = direction === "asc" ? sql`>` : sql`<`;
+  return sql`(${sortKeyColumn} ${comparison} ${cursor.sortKey}::timestamptz OR (${sortKeyColumn} = ${cursor.sortKey}::timestamptz AND ${artifactId} ${comparison} ${cursor.id}))`;
 }
 
-function isAfterCursor(item: { updatedAt: string; id: string }, cursor: ArtifactCursor | null) {
+function orderBySort(sortKeyColumn: SQL<Date>, artifactId: SQL<string>, direction: SortDirection) {
+  return direction === "asc"
+    ? [asc(sortKeyColumn), asc(artifactId)]
+    : [desc(sortKeyColumn), desc(artifactId)];
+}
+
+/**
+ * The value the ordering (and therefore the cursor) uses for an item. Artifacts
+ * default to their `createdAt`; starred documents override it with `starredAt`.
+ */
+function sortKeyOf(item: { id: string; createdAt: string }, sortDates: Map<string, string>) {
+  return sortDates.get(item.id) ?? item.createdAt;
+}
+
+function buildCursor(
+  item: { id: string; createdAt: string },
+  order: ArtifactOrder,
+  sortDates: Map<string, string>,
+) {
+  return encodeCursor({
+    v: 2,
+    sort: order.sort,
+    starred: order.starred,
+    sortKey: sortKeyOf(item, sortDates),
+    id: item.id,
+  });
+}
+
+function isAfterCursor(
+  item: { id: string; createdAt: string },
+  cursor: ArtifactCursor | null,
+  direction: SortDirection,
+  sortDates: Map<string, string>,
+) {
   if (!cursor) return true;
-  const dateDiff = Date.parse(item.updatedAt) - Date.parse(cursor.updatedAt);
-  return dateDiff < 0 || (dateDiff === 0 && item.id < cursor.id);
+  const dateDiff = Date.parse(sortKeyOf(item, sortDates)) - Date.parse(cursor.sortKey);
+  if (dateDiff !== 0) return direction === "asc" ? dateDiff > 0 : dateDiff < 0;
+  return direction === "asc" ? item.id > cursor.id : item.id < cursor.id;
 }
 
 function escapeLikePattern(value: string) {
@@ -172,25 +244,32 @@ async function readTextAttachmentPreview(
   }
 }
 
-function sortArtifacts(artifacts: CompanyArtifact[], sortDates = new Map<string, string>()) {
+function sortArtifacts(
+  artifacts: CompanyArtifact[],
+  order: ArtifactOrder,
+  sortDates = new Map<string, string>(),
+) {
+  // The comparator below expresses the descending order (newest and highest id
+  // first); an ascending request flips it.
+  const sign = order.direction === "asc" ? -1 : 1;
   return artifacts.sort((a, b) => {
-    const dateDiff = Date.parse(sortDates.get(b.id) ?? b.updatedAt)
-      - Date.parse(sortDates.get(a.id) ?? a.updatedAt);
-    if (dateDiff !== 0) return dateDiff;
-    return b.id.localeCompare(a.id);
+    const dateDiff = Date.parse(sortKeyOf(b, sortDates)) - Date.parse(sortKeyOf(a, sortDates));
+    if (dateDiff !== 0) return sign * dateDiff;
+    return sign * b.id.localeCompare(a.id);
   });
 }
 
-function pageByCursor<T extends { id: string; updatedAt: string }>(
+function pageByCursor<T extends { id: string; createdAt: string }>(
   items: T[],
   limit: number,
   cursor: ArtifactCursor | null,
+  order: ArtifactOrder,
+  sortDates = new Map<string, string>(),
 ) {
-  const filtered = items.filter((item) => isAfterCursor(item, cursor));
+  const filtered = items.filter((item) => isAfterCursor(item, cursor, order.direction, sortDates));
   const page = filtered.slice(0, limit);
-  const nextCursor = filtered.length > limit
-    ? encodeCursor({ id: page[page.length - 1]?.id ?? "", updatedAt: page[page.length - 1]?.updatedAt ?? new Date(0).toISOString() })
-    : null;
+  const last = page[page.length - 1];
+  const nextCursor = filtered.length > limit && last ? buildCursor(last, order, sortDates) : null;
   return { page, nextCursor };
 }
 
@@ -253,7 +332,7 @@ function emptyGroup(input: {
   query: CompanyArtifactsQuery;
   groupBy: ArtifactGroupBy;
   issue: IssueGroupingRow;
-}): CompanyArtifactGroup {
+}): ArtifactGroup {
   const summary = getIssueSummary(input.issue);
   return {
     id: `${input.groupBy}:${input.issue.id}`,
@@ -263,6 +342,9 @@ function emptyGroup(input: {
     count: 0,
     mediaKinds: [],
     previewArtifacts: [],
+    // No artifacts yet: fall back to the issue time so the group still sorts
+    // deterministically. Only the selected (possibly empty) group takes this path.
+    createdAt: input.issue.updatedAt.toISOString(),
     updatedAt: input.issue.updatedAt.toISOString(),
     href: buildArtifactsGroupHref(input.companyPrefix, input.query, input.groupBy, input.issue.id),
   };
@@ -273,9 +355,11 @@ function buildArtifactGroups(input: {
   companyPrefix: string;
   query: CompanyArtifactsQuery;
   groupBy: ArtifactGroupBy;
+  order: ArtifactOrder;
   issueRows: Map<string, IssueGroupingRow>;
 }) {
-  const groups = new Map<string, CompanyArtifactGroup>();
+  const groups = new Map<string, ArtifactGroup>();
+  const sign = input.order.direction === "asc" ? -1 : 1;
 
   for (const artifact of input.artifacts) {
     const groupIssueId = resolveGroupIssueId(input.groupBy, artifact.issue.id, input.issueRows);
@@ -306,12 +390,17 @@ function buildArtifactGroups(input: {
     if (Date.parse(artifact.updatedAt) > Date.parse(group.updatedAt)) {
       group.updatedAt = artifact.updatedAt;
     }
+    if (Date.parse(artifact.createdAt) > Date.parse(group.createdAt)) {
+      group.createdAt = artifact.createdAt;
+    }
   }
 
+  // Groups are ordered on the same key as the cursor (the newest artifact in the
+  // group), so a grouped list pages without skipping or repeating a group.
   return [...groups.values()].sort((a, b) => {
-    const dateDiff = Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
-    if (dateDiff !== 0) return dateDiff;
-    return b.id.localeCompare(a.id);
+    const dateDiff = Date.parse(b.createdAt) - Date.parse(a.createdAt);
+    if (dateDiff !== 0) return sign * dateDiff;
+    return sign * b.id.localeCompare(a.id);
   });
 }
 
@@ -335,6 +424,15 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
       if (query.starred && !options.userId) {
         return { artifacts: [], nextCursor: null };
       }
+
+      if (cursor && (cursor.sort !== query.sort || cursor.starred !== query.starred)) {
+        throw badRequest("Cursor does not match the requested sort order or starred filter");
+      }
+      const order: ArtifactOrder = {
+        sort: query.sort,
+        starred: query.starred,
+        direction: query.sort === "createdAt:asc" ? "asc" : "desc",
+      };
 
       const fetchLimit = Math.min(query.limit + 1, COMPANY_ARTIFACTS_MAX_LIMIT + 1);
       const sourceFetchLimit = groupBy ? GROUPED_ARTIFACT_FETCH_LIMIT : fetchLimit;
@@ -367,10 +465,16 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
               notInArray(issueDocuments.key, [...SYSTEM_ISSUE_DOCUMENT_KEYS]),
             ]),
         ];
+        // Documents sort on their creation time; the starred view instead shows
+        // the most recently starred document first, so it sorts (and pages) on
+        // `starredAt`.
         const documentSortDate = query.starred
           ? sql<Date>`${documentMemberships.starredAt}`
-          : sql<Date>`${documents.updatedAt}`;
-        const documentCursor = groupBy ? undefined : cursorCondition(documentSortDate, documentArtifactId, cursor);
+          : sql<Date>`${documents.createdAt}`;
+        const documentDirection: SortDirection = query.starred ? "desc" : order.direction;
+        const documentCursor = groupBy
+          ? undefined
+          : cursorCondition(documentSortDate, documentArtifactId, cursor, documentDirection);
         if (documentCursor) documentConditions.push(documentCursor);
         if (groupBy === "task" && query.groupIssueId) documentConditions.push(eq(issues.id, query.groupIssueId));
         if (query.projectId) documentConditions.push(eq(issues.projectId, query.projectId));
@@ -397,6 +501,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
             latestBody: documents.latestBody,
             createdByAgentId: sql<string | null>`coalesce(${createdAgent.id}, ${updatedAgent.id})`,
             createdByAgentName: sql<string | null>`coalesce(${createdAgent.name}, ${updatedAgent.name})`,
+            createdAt: documents.createdAt,
             updatedAt: documents.updatedAt,
             starredAt: documentMemberships.starredAt,
           })
@@ -445,12 +550,16 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
             ),
           )
           .where(and(...documentConditions))
-          .orderBy(desc(documentSortDate), desc(documentArtifactId));
+          .orderBy(...orderBySort(documentSortDate, documentArtifactId, documentDirection));
         const documentRows = await documentRowsQuery.limit(sourceFetchLimit);
 
         for (const row of documentRows) {
           const identifier = row.issueIdentifier ?? row.issueId;
-          artifactSortDates.set(row.artifactId, (row.starredAt ?? row.updatedAt).toISOString());
+          if (query.starred) {
+            // Starred listings sort on starredAt instead of createdAt, so the
+            // cursor key comes from this map rather than from the artifact.
+            artifactSortDates.set(row.artifactId, (row.starredAt ?? row.createdAt).toISOString());
+          }
           artifacts.push({
             id: row.artifactId,
             source: "document",
@@ -466,8 +575,20 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
             createdByAgent: row.createdByAgentId && row.createdByAgentName
               ? { id: row.createdByAgentId, name: row.createdByAgentName }
               : null,
+            createdAt: row.createdAt.toISOString(),
             updatedAt: row.updatedAt.toISOString(),
             href: buildIssueHref(company.issuePrefix, identifier, `document-${row.key}`),
+            byteSize: null,
+            originalFilename: null,
+            summary: null,
+            status: null,
+            reviewState: null,
+            healthStatus: null,
+            isPrimary: null,
+            provider: null,
+            createdByRunId: null,
+            issueId: row.issueId,
+            projectId: row.projectId ?? null,
           });
         }
       }
@@ -483,9 +604,10 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
           ...issueConditions,
         ];
         const workProductConditions: SQL[] = [...workProductBaseConditions];
+        const workProductSortKey = sql<Date>`${issueWorkProducts.createdAt}`;
         const workProductCursor = groupBy
           ? undefined
-          : cursorCondition(sql<Date>`${issueWorkProducts.updatedAt}`, workProductArtifactId, cursor);
+          : cursorCondition(workProductSortKey, workProductArtifactId, cursor, order.direction);
         const workProductKind = contentTypeKindCondition(workProductContentType, query.kind);
         if (workProductCursor) workProductConditions.push(workProductCursor);
         if (groupBy === "task" && query.groupIssueId) {
@@ -525,8 +647,15 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
             title: issueWorkProducts.title,
             summary: issueWorkProducts.summary,
             metadata: issueWorkProducts.metadata,
+            status: issueWorkProducts.status,
+            reviewState: issueWorkProducts.reviewState,
+            healthStatus: issueWorkProducts.healthStatus,
+            isPrimary: issueWorkProducts.isPrimary,
+            provider: issueWorkProducts.provider,
+            createdByRunId: issueWorkProducts.createdByRunId,
             createdByAgentId: workProductAgent.id,
             createdByAgentName: workProductAgent.name,
+            createdAt: issueWorkProducts.createdAt,
             updatedAt: issueWorkProducts.updatedAt,
           })
           .from(issueWorkProducts)
@@ -559,7 +688,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
             ),
           )
           .where(and(...workProductConditions))
-          .orderBy(desc(issueWorkProducts.updatedAt), desc(workProductArtifactId));
+          .orderBy(...orderBySort(workProductSortKey, workProductArtifactId, order.direction));
         const workProductRows = await workProductRowsQuery.limit(sourceFetchLimit);
 
         const workProductAttachmentRows = await db
@@ -606,8 +735,20 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
             createdByAgent: row.createdByAgentId && row.createdByAgentName
               ? { id: row.createdByAgentId, name: row.createdByAgentName }
               : null,
+            createdAt: row.createdAt.toISOString(),
             updatedAt: row.updatedAt.toISOString(),
             href: buildIssueHref(company.issuePrefix, identifier, `work-product-${row.workProductId}`),
+            byteSize: attachmentMetadata?.byteSize ?? null,
+            originalFilename: attachmentMetadata?.originalFilename ?? null,
+            summary: row.summary ?? null,
+            status: row.status,
+            reviewState: row.reviewState,
+            healthStatus: row.healthStatus,
+            isPrimary: row.isPrimary,
+            provider: row.provider,
+            createdByRunId: row.createdByRunId ?? null,
+            issueId: row.issueId,
+            projectId: row.projectId ?? null,
           });
         }
 
@@ -619,9 +760,10 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
           isNotNull(assets.createdByAgentId),
           ...issueConditions,
         ];
+        const attachmentSortKey = sql<Date>`${issueAttachments.createdAt}`;
         const attachmentCursor = groupBy
           ? undefined
-          : cursorCondition(sql<Date>`${issueAttachments.updatedAt}`, attachmentArtifactId, cursor);
+          : cursorCondition(attachmentSortKey, attachmentArtifactId, cursor, order.direction);
         const attachmentKind = contentTypeKindCondition(sql<string>`${assets.contentType}`, query.kind);
         if (attachmentCursor) attachmentConditions.push(attachmentCursor);
         if (groupBy === "task" && query.groupIssueId) attachmentConditions.push(eq(issues.id, query.groupIssueId));
@@ -649,8 +791,11 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
             contentType: assets.contentType,
             byteSize: assets.byteSize,
             originalFilename: assets.originalFilename,
+            provider: assets.provider,
+            createdByRunId: issueAttachments.originatingRunId,
             createdByAgentId: attachmentAgent.id,
             createdByAgentName: attachmentAgent.name,
+            createdAt: issueAttachments.createdAt,
             updatedAt: issueAttachments.updatedAt,
           })
           .from(issueAttachments)
@@ -683,7 +828,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
             ),
           )
           .where(and(...attachmentConditions))
-          .orderBy(desc(issueAttachments.updatedAt), desc(attachmentArtifactId));
+          .orderBy(...orderBySort(attachmentSortKey, attachmentArtifactId, order.direction));
         const attachmentRows = await attachmentRowsQuery.limit(sourceFetchLimit);
 
         const attachmentArtifacts = await Promise.all(attachmentRows.map(async (row): Promise<CompanyArtifact | null> => {
@@ -712,23 +857,35 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
             createdByAgent: row.createdByAgentId && row.createdByAgentName
               ? { id: row.createdByAgentId, name: row.createdByAgentName }
               : null,
+            createdAt: row.createdAt.toISOString(),
             updatedAt: row.updatedAt.toISOString(),
             href: buildIssueHref(company.issuePrefix, identifier, `attachment-${row.attachmentId}`),
+            byteSize: row.byteSize,
+            originalFilename: row.originalFilename,
+            summary: null,
+            status: null,
+            reviewState: null,
+            // An attachment has no server-side failure state of its own (the
+            // asset row only records where the bytes live), so it reports null
+            // rather than a made-up value.
+            healthStatus: null,
+            isPrimary: null,
+            provider: row.provider,
+            createdByRunId: row.createdByRunId ?? null,
+            issueId: row.issueId,
+            projectId: row.projectId ?? null,
           };
         }));
 
         artifacts.push(...attachmentArtifacts.filter((artifact): artifact is CompanyArtifact => artifact !== null));
       }
 
-      const sorted = sortArtifacts(artifacts, artifactSortDates);
+      const sorted = sortArtifacts(artifacts, order, artifactSortDates);
       if (!groupBy) {
         const page = sorted.slice(0, query.limit);
         const last = page[page.length - 1];
-        const nextCursor = sorted.length > query.limit
-          ? encodeCursor({
-            id: last?.id ?? "",
-            updatedAt: last ? artifactSortDates.get(last.id) ?? last.updatedAt : new Date(0).toISOString(),
-          })
+        const nextCursor = sorted.length > query.limit && last
+          ? buildCursor(last, order, artifactSortDates)
           : null;
 
         return { artifacts: page, nextCursor };
@@ -742,6 +899,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
         companyPrefix: company.issuePrefix,
         query,
         groupBy,
+        order,
         issueRows,
       });
 
@@ -762,11 +920,11 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
         const selectedArtifacts = sorted.filter((artifact) =>
           resolveGroupIssueId(groupBy, artifact.issue.id, issueRows) === selectedGroupIssueId
         );
-        const { page, nextCursor } = pageByCursor(selectedArtifacts, query.limit, cursor);
+        const { page, nextCursor } = pageByCursor(selectedArtifacts, query.limit, cursor, order, artifactSortDates);
         return { artifacts: page, selectedGroup, nextCursor };
       }
 
-      const { page, nextCursor } = pageByCursor(groups, query.limit, cursor);
+      const { page, nextCursor } = pageByCursor(groups, query.limit, cursor, order);
       return { artifacts: [], groups: page, nextCursor };
     },
   };
