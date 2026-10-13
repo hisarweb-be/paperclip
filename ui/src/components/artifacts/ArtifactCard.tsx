@@ -2,7 +2,17 @@ import { type SyntheticEvent, useEffect, useRef, useState } from "react";
 import { Download, ExternalLink, Paperclip, Play } from "lucide-react";
 import type { CompanyArtifact } from "@/api/artifacts";
 import { Link } from "@/lib/router";
-import { cn, formatDate } from "@/lib/utils";
+import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import {
+  artifactDownloadHref,
+  artifactFilename,
+  artifactMetaParts,
+  artifactOpenHref,
+  artifactOriginLabel,
+} from "@/lib/artifact-display";
+import { artifactStatus } from "@/lib/artifact-status";
+import { ArtifactStatusChip } from "@/components/artifacts/ArtifactStatusChip";
 
 interface ArtifactCardProps {
   artifact: CompanyArtifact;
@@ -45,6 +55,9 @@ function ImagePreview({ artifact }: { artifact: PreviewArtifact }) {
         src={artifact.contentPath}
         alt={artifact.title}
         loading="lazy"
+        decoding="async"
+        width={480}
+        height={270}
         className="h-full w-full object-cover"
         onError={() => setErrored(true)}
       />
@@ -167,75 +180,149 @@ export function ArtifactPreview({ artifact }: { artifact: PreviewArtifact }) {
   }
 }
 
-function SecondaryAction({
+/**
+ * Always-visible file action (HIS-2659 item 4). Kept as a plain anchor so the
+ * browser handles the download and the new-tab navigation natively.
+ */
+function FileAction({
   href,
   download,
+  label,
   title,
+  variant,
+  size,
+  className,
   children,
 }: {
   href: string;
-  download?: boolean;
+  download: boolean;
+  label: string;
   title: string;
+  variant: "default" | "outline";
+  size: "sm" | "icon-sm";
+  className?: string;
   children: React.ReactNode;
 }) {
   return (
-    <a
-      href={href}
-      {...(download ? { download: "" } : { target: "_blank", rel: "noreferrer" })}
-      title={title}
-      aria-label={title}
-      onClick={(event) => event.stopPropagation()}
-      className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-    >
-      {children}
-    </a>
+    <Button asChild variant={variant} size={size} className={className}>
+      <a
+        href={href}
+        {...(download
+          ? { download: "" }
+          : { target: "_blank", rel: "noreferrer" })}
+        aria-label={label}
+        title={title}
+      >
+        {children}
+      </a>
+    </Button>
   );
 }
 
+/**
+ * Artifact card (HIS-2659).
+ *
+ * The card is a navigation surface again, but as a *stretched overlay link*
+ * instead of an outer `<Link>`: the always-visible Openen/Downloaden actions
+ * must be real anchors, and anchors cannot be nested inside anchors. The
+ * overlay keeps the whole card clickable and keyboard reachable while the
+ * action row sits above it in the stacking order.
+ */
 export function ArtifactCard({ artifact }: ArtifactCardProps) {
+  const filename = artifactFilename(artifact);
+  const openHref = artifactOpenHref(artifact);
+  const downloadHref = artifactDownloadHref(artifact);
+  const status = artifactStatus(artifact);
+  const metaParts = artifactMetaParts(artifact);
+  const origin = artifactOriginLabel(artifact);
+
   return (
-    <Link
-      // design-allow(card-pattern): navigation <Link> card; Card renders a div and would break anchor semantics (C5a Run 3)
-      to={artifact.href}
-      disableIssueQuicklook
+    // design-allow(card-pattern): navigation card; uses a stretched overlay <Link>
+    // so the visible file actions stay real anchors (no nested <a>).
+    <article
       data-testid="artifact-card"
       data-media-kind={artifact.mediaKind}
-      className="group flex flex-col overflow-hidden rounded-lg border border-border bg-card cursor-pointer transition-colors hover:border-foreground/20 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      data-status-tone={status?.tone ?? "none"}
+      className={cn(
+        "group relative flex flex-col overflow-hidden rounded-lg border border-border bg-card transition-colors",
+        "hover:border-foreground/20 hover:shadow-md",
+        "focus-within:ring-2 focus-within:ring-ring",
+      )}
     >
-      <ArtifactPreview artifact={artifact} />
+      <Link
+        to={artifact.href}
+        disableIssueQuicklook
+        data-artifact-overlay
+        aria-label={`Openen: ${filename}`}
+        className="absolute inset-0 z-0 rounded-lg focus-visible:outline-none"
+      />
+
+      <div className="relative">
+        <ArtifactPreview artifact={artifact} />
+        {status ? (
+          <div className="pointer-events-none absolute left-2 top-2 z-10">
+            <ArtifactStatusChip status={status} />
+          </div>
+        ) : null}
+      </div>
 
       <div className="flex flex-1 flex-col gap-1 p-3">
-        <div className="flex h-7 items-start justify-between gap-2">
-          <h3
-            className="min-w-0 flex-1 truncate text-sm font-medium leading-7 text-foreground/85"
-            title={artifact.title}
-          >
-            {artifact.title}
-          </h3>
-          <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-            {artifact.openPath ? (
-              <SecondaryAction href={artifact.openPath} title="Open file in new tab">
-                <ExternalLink className="h-3.5 w-3.5" />
-              </SecondaryAction>
+        <h3
+          className="h-5 truncate text-sm font-medium leading-5 text-foreground/85"
+          title={filename}
+        >
+          {filename}
+        </h3>
+
+        <p className="flex min-h-4 items-center gap-1.5 truncate text-(length:--text-micro) text-muted-foreground/65">
+          {metaParts.map((part, index) => (
+            <span key={part.key} className="flex items-center gap-1.5">
+              {index > 0 ? <span aria-hidden="true" className="text-muted-foreground/50">·</span> : null}
+              <span>{part.label}</span>
+            </span>
+          ))}
+        </p>
+
+        {origin ? (
+          <p className="truncate text-(length:--text-micro) text-muted-foreground/55" title={origin}>
+            {origin}
+          </p>
+        ) : null}
+
+        {openHref || downloadHref ? (
+          <div className="relative z-10 mt-1.5 flex items-center gap-1.5">
+            {openHref ? (
+              <FileAction
+                href={openHref}
+                download={false}
+                label={`Openen: ${filename}`}
+                title={`Openen: ${filename}`}
+                variant="default"
+                size="sm"
+                className="flex-1 sm:flex-none"
+              >
+                <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                Openen
+              </FileAction>
             ) : null}
-            {artifact.downloadPath ? (
-              <SecondaryAction href={artifact.downloadPath} download title="Download file">
-                <Download className="h-3.5 w-3.5" />
-              </SecondaryAction>
+            {downloadHref ? (
+              <FileAction
+                href={downloadHref}
+                download={downloadHref.startsWith("/")}
+                label={`Downloaden: ${filename}`}
+                title={`Downloaden: ${filename}`}
+                variant="outline"
+                size="sm"
+                className="flex-1 sm:flex-none"
+              >
+                <Download className="h-3.5 w-3.5" aria-hidden="true" />
+                Downloaden
+              </FileAction>
             ) : null}
           </div>
-        </div>
-
-        <div className="mt-0.5 flex items-center gap-1.5 text-(length:--text-micro) text-muted-foreground/65">
-          <span>Last edited {formatDate(artifact.updatedAt)}</span>
-          {artifact.createdByAgent ? (
-            <>
-              <span className="text-muted-foreground/50">·</span>
-              <span className="truncate">{artifact.createdByAgent.name}</span>
-            </>
-          ) : null}
-        </div>
+        ) : null}
       </div>
-    </Link>
+
+    </article>
   );
 }

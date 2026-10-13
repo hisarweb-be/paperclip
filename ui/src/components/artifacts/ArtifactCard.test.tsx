@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/router", () => ({
   Link: ({
@@ -26,7 +26,10 @@ vi.mock("@/lib/router", () => ({
 import { ArtifactCard } from "./ArtifactCard";
 import type { CompanyArtifact } from "@/api/artifacts";
 
-function makeArtifact(overrides: Partial<CompanyArtifact> = {}): CompanyArtifact {
+/** Local noon, so the rendered nl-BE label is the same in every timezone. */
+const LOCAL_NOON_2026_06_01 = new Date(2026, 5, 1, 12, 0, 0, 0).toISOString();
+
+function makeArtifact(overrides: Record<string, unknown> = {}): CompanyArtifact {
   return {
     id: "art-1",
     source: "attachment",
@@ -40,12 +43,10 @@ function makeArtifact(overrides: Partial<CompanyArtifact> = {}): CompanyArtifact
     issue: { id: "issue-1", identifier: "PAP-10306", title: "Landing visuals" },
     project: { id: "proj-1", name: "Paperclip App" },
     createdByAgent: { id: "agent-1", name: "ClaudeCoder" },
-    // Local, not UTC: the card renders "Last edited" from the local calendar
-    // day, and noon UTC is already the 2nd at UTC+14.
-    updatedAt: new Date(2026, 5, 1, 12, 0, 0, 0).toISOString(),
+    updatedAt: LOCAL_NOON_2026_06_01,
     href: "/issues/PAP-10306#attachment-art-1",
     ...overrides,
-  };
+  } as CompanyArtifact;
 }
 
 describe("ArtifactCard", () => {
@@ -58,29 +59,119 @@ describe("ArtifactCard", () => {
     expect(markup).toContain('src="/files/art-1.png"');
     expect(markup).toContain("object-cover");
     expect(markup).toContain("Hero shot");
-    expect(markup).toContain("flex h-7 items-start justify-between gap-2");
-    expect(markup).toContain("leading-7");
-    expect(markup).toContain("Last edited Jun 1, 2026");
-    expect(markup).not.toContain("Landing visuals");
-    expect(markup).not.toContain("Edited ");
   });
 
-  it("renders only the artifact subject and absolute metadata under the preview", () => {
+  it("shows the filename, the created time and the origin line", () => {
     const markup = renderToStaticMarkup(
       <ArtifactCard
         artifact={makeArtifact({
-          title: "Social launch clip",
-          issue: { id: "issue-2", identifier: "PAP-10370", title: "Make artifact page look like this" },
-          updatedAt: new Date(2025, 9, 8, 12, 0, 0, 0).toISOString(),
-          createdByAgent: null,
+          originalFilename: "hero-shot-final.png",
+          createdAt: LOCAL_NOON_2026_06_01,
         })}
       />,
     );
 
-    expect(markup).toContain("Social launch clip");
-    expect(markup).toContain("Last edited Oct 8, 2025");
-    expect(markup).not.toContain("Make artifact page look like this");
-    expect(markup).not.toContain(">PAP-10370<");
+    // The uploaded filename wins over the title (HIS-2660 field).
+    expect(markup).toContain("hero-shot-final.png");
+    expect(markup).not.toContain(">Hero shot<");
+    // Creation time, not the update time (HIS-2659 item 3).
+    expect(markup).toContain("Aangemaakt 1 jun 12:00");
+    expect(markup).not.toContain("Bewerkt");
+    expect(markup).toContain("PAP-10306 · ClaudeCoder");
+  });
+
+  it("falls back to the update time and a placeholder name", () => {
+    const markup = renderToStaticMarkup(
+      <ArtifactCard artifact={makeArtifact({ title: "", createdByAgent: null })} />,
+    );
+    expect(markup).toContain("Zonder titel");
+    expect(markup).toContain("Bewerkt 1 jun 12:00");
+    expect(markup).toContain("PAP-10306");
+    expect(markup).not.toContain(" · </p>");
+  });
+
+  // ---- acceptance criterion (b): no hover-only action ---------------------
+
+  it("keeps Openen and Downloaden visible and keyboard reachable", () => {
+    const markup = renderToStaticMarkup(<ArtifactCard artifact={makeArtifact()} />);
+
+    expect(markup).toContain('aria-label="Openen: Hero shot"');
+    expect(markup).toContain('aria-label="Downloaden: Hero shot"');
+    expect(markup).toContain(">Openen<");
+    expect(markup).toContain(">Downloaden<");
+    // The old reveal-on-hover row is gone: nothing that only appears on :hover.
+    expect(markup).not.toContain("opacity-0");
+    expect(markup).not.toContain("group-hover:opacity-100");
+    expect(markup).not.toContain("group-focus-within:opacity-100");
+    // Real anchors, so keyboard and touch reach them without a hover state.
+    expect(markup).toContain('target="_blank"');
+    expect(markup).toContain('rel="noreferrer"');
+    expect(markup).toContain('download=""');
+  });
+
+  it("omits open/download actions when no file paths exist (e.g. documents)", () => {
+    const markup = renderToStaticMarkup(
+      <ArtifactCard
+        artifact={makeArtifact({
+          source: "document",
+          mediaKind: "document",
+          contentPath: null,
+          openPath: null,
+          downloadPath: null,
+          previewText: "Plan body",
+        })}
+      />,
+    );
+    expect(markup).not.toContain(">Openen<");
+    expect(markup).not.toContain(">Downloaden<");
+  });
+
+  // ---- acceptance criterion (c): red chip, no extra API call --------------
+
+  it("shows a red chip for a failed run without calling the API", () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const markup = renderToStaticMarkup(
+      <ArtifactCard artifact={makeArtifact({ turnTerminalState: "failed" })} />,
+    );
+
+    expect(markup).toContain('data-status-tone="red"');
+    expect(markup).toContain('data-testid="artifact-status-chip"');
+    expect(markup).toContain('data-tone="red"');
+    expect(markup).toContain('data-reason="turnTerminalState=failed"');
+    expect(markup).toContain("Gefaald");
+    // Derived from the payload we already have: nothing is fetched per card.
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    fetchSpy.mockRestore();
+  });
+
+  it("shows at most one chip and renders chip-free for pre-projection payloads", () => {
+    const withReview = renderToStaticMarkup(
+      <ArtifactCard
+        artifact={makeArtifact({ turnTerminalState: "failed", reviewState: "pending", status: "active" })}
+      />,
+    );
+    expect(withReview.match(/data-testid="artifact-status-chip"/g)?.length).toBe(1);
+    expect(withReview).toContain('data-tone="red"');
+
+    const bare = renderToStaticMarkup(<ArtifactCard artifact={makeArtifact()} />);
+    expect(bare).not.toContain('data-testid="artifact-status-chip"');
+    expect(bare).toContain('data-status-tone="none"');
+  });
+
+  // ---- performance items -------------------------------------------------
+
+  it("reserves the preview box and lazy-loads the image", () => {
+    const markup = renderToStaticMarkup(<ArtifactCard artifact={makeArtifact()} />);
+
+    expect(markup).toContain("aspect-video");
+    expect(markup).toContain('loading="lazy"');
+    expect(markup).toContain('decoding="async"');
+    expect(markup).toContain('width="480"');
+    expect(markup).toContain('height="270"');
+    // The decorative stack layers were removed (audit).
+    expect(markup).not.toContain("artifact-stack-layer");
   });
 
   it("renders a video preview with a video element and play glyph", () => {
@@ -92,110 +183,6 @@ describe("ArtifactCard", () => {
     expect(markup).toContain('data-media-kind="video"');
     expect(markup).toContain("<video");
     expect(markup).toContain('preload="metadata"');
-  });
-
-  it("seeks video previews after metadata loads so a thumbnail frame is painted", () => {
-    const container = document.createElement("div");
-    document.body.appendChild(container);
-    const root = createRoot(container);
-
-    flushSync(() => {
-      root.render(
-        <ArtifactCard
-          artifact={makeArtifact({ mediaKind: "video", contentType: "video/mp4", contentPath: "/files/clip.mp4" })}
-        />,
-      );
-    });
-
-    const video = container.querySelector("video") as HTMLVideoElement;
-    expect(video).not.toBeNull();
-    expect(video.dataset.frameReady).toBe("false");
-
-    Object.defineProperty(video, "readyState", {
-      configurable: true,
-      value: HTMLMediaElement.HAVE_METADATA,
-    });
-
-    flushSync(() => {
-      video.dispatchEvent(new Event("loadedmetadata", { bubbles: true }));
-    });
-
-    expect(video.currentTime).toBe(0.05);
-
-    flushSync(() => {
-      video.dispatchEvent(new Event("seeked", { bubbles: true }));
-    });
-
-    expect(video.dataset.frameReady).toBe("true");
-
-    flushSync(() => root.unmount());
-    container.remove();
-  });
-
-  it("seeks into clips and resets thumbnail state when the source changes", () => {
-    const container = document.createElement("div");
-    const root = createRoot(container);
-    const render = (contentPath: string) => flushSync(() => root.render(
-      <ArtifactCard artifact={makeArtifact({ mediaKind: "video", contentPath })} />,
-    ));
-    try {
-      render("/first.mp4");
-      const first = container.querySelector("video")!;
-      Object.defineProperty(first, "duration", { value: 8 });
-      flushSync(() => first.dispatchEvent(new Event("loadedmetadata")));
-      expect(first.currentTime).toBe(1);
-      flushSync(() => first.dispatchEvent(new Event("seeked")));
-      expect(first.dataset.frameReady).toBe("true");
-      render("/short.mp4");
-      const next = container.querySelector("video")!;
-      expect(next).not.toBe(first);
-      expect(next.dataset.frameReady).toBe("false");
-      Object.defineProperty(next, "duration", { value: 0.2 });
-      flushSync(() => next.dispatchEvent(new Event("loadedmetadata")));
-      expect(next.currentTime).toBe(0.05);
-      expect(next.autoplay).toBe(false);
-      expect(next.muted).toBe(true);
-    } finally {
-      flushSync(() => root.unmount());
-    }
-  });
-
-  it("reveals video previews if the browser does not report seek completion", () => {
-    vi.useFakeTimers();
-    const container = document.createElement("div");
-    document.body.appendChild(container);
-    const root = createRoot(container);
-
-    try {
-      flushSync(() => {
-        root.render(
-          <ArtifactCard
-            artifact={makeArtifact({ mediaKind: "video", contentType: "video/mp4", contentPath: "/files/clip.mp4" })}
-          />,
-        );
-      });
-
-      const video = container.querySelector("video") as HTMLVideoElement;
-      expect(video).not.toBeNull();
-      expect(video.dataset.frameReady).toBe("false");
-
-      flushSync(() => {
-        video.dispatchEvent(new Event("loadedmetadata", { bubbles: true }));
-      });
-
-      expect(video.currentTime).toBe(0.05);
-      expect(video.dataset.frameReady).toBe("false");
-
-      flushSync(() => {
-        vi.advanceTimersByTime(3000);
-      });
-
-      expect(video.dataset.frameReady).toBe("true");
-    } finally {
-      flushSync(() => root.unmount());
-      container.remove();
-      vi.useRealTimers();
-    }
   });
 
   it("renders a falling-back video placeholder when no content path exists", () => {
@@ -220,11 +207,8 @@ describe("ArtifactCard", () => {
     );
     expect(markup).toContain('data-media-kind="document"');
     expect(markup).toContain("This is the plan preview excerpt.");
-    expect(markup).toContain("text-base");
-    expect(markup).toContain("leading-6");
     expect(markup).toContain("max-h-full");
     expect(markup).toContain("overflow-hidden");
-    expect(markup).not.toContain('data-lucide="file-text"');
   });
 
   it("renders a placeholder for empty artifacts without an image or video", () => {
@@ -238,38 +222,108 @@ describe("ArtifactCard", () => {
     expect(markup).not.toContain("<video");
   });
 
-  it("omits open/download actions when no file paths exist (e.g. documents)", () => {
-    const markup = renderToStaticMarkup(
-      <ArtifactCard
-        artifact={makeArtifact({
-          source: "document",
-          mediaKind: "document",
-          contentPath: null,
-          openPath: null,
-          downloadPath: null,
-          previewText: "Plan body",
-        })}
-      />,
-    );
-    expect(markup).not.toContain('aria-label="Download file"');
-    expect(markup).not.toContain('aria-label="Open file in new tab"');
+  // ---- video thumbnail behaviour (unchanged) -----------------------------
+
+  const mountedContainers: HTMLDivElement[] = [];
+  const mountedRoots: ReturnType<typeof createRoot>[] = [];
+
+  function mount(contentPath: string) {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    mountedContainers.push(container);
+    mountedRoots.push(root);
+    flushSync(() => {
+      root.render(
+        <ArtifactCard
+          artifact={makeArtifact({ mediaKind: "video", contentType: "video/mp4", contentPath })}
+        />,
+      );
+    });
+    return container;
+  }
+
+  afterEach(() => {
+    for (const root of mountedRoots.splice(0)) {
+      flushSync(() => root.unmount());
+    }
+    for (const container of mountedContainers.splice(0)) {
+      container.remove();
+    }
   });
 
-  it("reserves the same title row height when file actions are absent", () => {
-    const markup = renderToStaticMarkup(
-      <ArtifactCard
-        artifact={makeArtifact({
-          openPath: null,
-          downloadPath: null,
-          createdByAgent: null,
-        })}
-      />,
-    );
+  it("seeks video previews after metadata loads so a thumbnail frame is painted", () => {
+    const container = mount("/files/clip.mp4");
 
-    expect(markup).toContain("flex h-7 items-start justify-between gap-2");
-    expect(markup).toContain("leading-7");
-    expect(markup).toContain("Last edited Jun 1, 2026");
-    expect(markup).not.toContain('aria-label="Download file"');
-    expect(markup).not.toContain('aria-label="Open file in new tab"');
+    const video = container.querySelector("video") as HTMLVideoElement;
+    expect(video).not.toBeNull();
+    expect(video.dataset.frameReady).toBe("false");
+
+    Object.defineProperty(video, "readyState", {
+      configurable: true,
+      value: HTMLMediaElement.HAVE_METADATA,
+    });
+
+    flushSync(() => {
+      video.dispatchEvent(new Event("loadedmetadata", { bubbles: true }));
+    });
+
+    expect(video.currentTime).toBe(0.05);
+
+    flushSync(() => {
+      video.dispatchEvent(new Event("seeked", { bubbles: true }));
+    });
+
+    expect(video.dataset.frameReady).toBe("true");
+  });
+
+  it("seeks into clips and resets thumbnail state when the source changes", () => {
+    const container = mount("/first.mp4");
+    const first = container.querySelector("video")!;
+    Object.defineProperty(first, "duration", { value: 8 });
+    flushSync(() => first.dispatchEvent(new Event("loadedmetadata")));
+    expect(first.currentTime).toBe(1);
+    flushSync(() => first.dispatchEvent(new Event("seeked")));
+    expect(first.dataset.frameReady).toBe("true");
+
+    flushSync(() => {
+      mountedRoots[0].render(
+        <ArtifactCard artifact={makeArtifact({ mediaKind: "video", contentPath: "/short.mp4" })} />,
+      );
+    });
+
+    const next = container.querySelector("video")!;
+    expect(next).not.toBe(first);
+    expect(next.dataset.frameReady).toBe("false");
+    Object.defineProperty(next, "duration", { value: 0.2 });
+    flushSync(() => next.dispatchEvent(new Event("loadedmetadata")));
+    expect(next.currentTime).toBe(0.05);
+    expect(next.autoplay).toBe(false);
+    expect(next.muted).toBe(true);
+  });
+
+  it("reveals video previews if the browser does not report seek completion", () => {
+    vi.useFakeTimers();
+    try {
+      const container = mount("/files/clip.mp4");
+
+      const video = container.querySelector("video") as HTMLVideoElement;
+      expect(video.dataset.frameReady).toBe("false");
+
+      flushSync(() => {
+        video.dispatchEvent(new Event("loadedmetadata", { bubbles: true }));
+      });
+
+      expect(video.currentTime).toBe(0.05);
+      expect(video.dataset.frameReady).toBe("false");
+
+      flushSync(() => {
+        vi.advanceTimersByTime(3000);
+      });
+
+      expect(video.dataset.frameReady).toBe("true");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
