@@ -66,6 +66,14 @@ export function evaluateCrossIssueInfluenceLimit(input: {
  * observation is intentionally recorded before the route mutation: once the
  * rollout reaches enforcement, failures cannot be used to race or probe past
  * the fail-closed backstop.
+ *
+ * A validated run without an issue anchor in its context snapshot (approval
+ * wakes whose approval links no issue, plugin-relayed decisions, board-triggered
+ * runs) is contained, not refused: attribution is proven by the locked run row,
+ * so its writes count against the same per-run cap instead of failing with a
+ * run-context error. The run-context error stays reserved for unattributable
+ * requests: a malformed run id or a run row that is missing or belongs to
+ * another company or agent.
  */
 export async function observeCrossIssueInfluence(
   db: Db,
@@ -109,11 +117,13 @@ export async function observeCrossIssueInfluence(
       throw crossIssueInfluenceRunContextError();
     }
 
+    // A rootless run (no issue anchor in its context snapshot) keeps its
+    // attribution but loses the same-issue shortcut: every target counts.
     const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
-    if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
     if (
-      sourceIssueId === input.targetIssueId ||
-      (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())
+      sourceIssueId &&
+      (sourceIssueId === input.targetIssueId ||
+        (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase()))
     ) {
       return null;
     }
@@ -144,6 +154,7 @@ export async function observeCrossIssueInfluence(
       details: {
         kind: input.kind,
         sourceIssueId,
+        rootlessRun: sourceIssueId === null,
         targetIssueId: input.targetIssueId,
         targetIssueIdentifier: input.targetIssueIdentifier ?? null,
         count: decision.count,
