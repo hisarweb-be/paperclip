@@ -8588,6 +8588,28 @@ export function issueRoutes(
       includeForIssueComment: wakeCommentId !== null,
     });
 
+    // HIS-2579: a reviewer woken on an in_review issue used to see no role
+    // marker at all, so review runs executed routine steps themselves and
+    // failed on credentials the executor holds. Expose the frozen executor
+    // and the pending participant so the woken run knows which side it is on.
+    const executionState = parseIssueExecutionState(issue.executionState);
+    const executionReview =
+      executionState && issue.status === "in_review"
+        ? {
+            state: executionState.status,
+            currentStageType: executionState.currentStageType,
+            currentParticipant: executionState.currentParticipant,
+            executorAgentId:
+              executionState.returnAssignee?.type === "agent"
+                ? executionState.returnAssignee.agentId
+                : null,
+            lastDecisionOutcome: executionState.lastDecisionOutcome,
+            changesRequestedCount: executionState.changesRequestedCount,
+            instruction:
+              "This issue is in review. If currentParticipant matches you, you are the reviewer: decide with a status update (approve => done, request changes => in_progress with a comment). Execution work belongs to the executor (executorAgentId); your review run does not carry the executor's credentials, so do not run execution steps yourself.",
+          }
+        : null;
+
     const response = {
       issue: {
         id: issue.id,
@@ -8599,6 +8621,7 @@ export function issueRoutes(
         workMode: issue.workMode,
         ...(blockerAttention ? { blockerAttention } : {}),
         ...(reviewAttention ? { reviewAttention } : {}),
+        ...(executionReview ? { executionReview } : {}),
         scheduledRetry,
         activeRecoveryAction: revalidatedActiveRecoveryAction,
         priority: issue.priority,
