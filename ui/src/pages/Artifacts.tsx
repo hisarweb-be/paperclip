@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useInfiniteQuery } from "@tanstack/react-query";
-import { ArrowLeft, Check, Layers, Package, Search, X } from "lucide-react";
+import { keepPreviousData, useInfiniteQuery } from "@tanstack/react-query";
+import { ArrowLeft, ChevronRight, Layers, Package, Search, SlidersHorizontal, X } from "lucide-react";
 import type { To } from "react-router-dom";
 import {
   artifactsApi,
@@ -11,44 +11,46 @@ import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
-import { PageSkeleton } from "../components/PageSkeleton";
 import { ArtifactCard } from "../components/artifacts/ArtifactCard";
 import { ArtifactGroupCard } from "../components/artifacts/ArtifactGroupCard";
-import { useSearchParams, Link } from "@/lib/router";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+  ArtifactCardSkeletonGrid,
+  ArtifactRecentListSkeleton,
+  ARTIFACT_GRID_CLASS,
+} from "../components/artifacts/ArtifactCardSkeleton";
+import { ArtifactPriorityPanelSlot } from "../components/artifacts/ArtifactPriorityPanel";
+import { ArtifactRecentList } from "../components/artifacts/ArtifactRecentList";
+import { ArtifactExpertPanel } from "../components/artifacts/ArtifactExpertPanel";
+import { artifactSortTime } from "../lib/artifact-display";
+import { useSearchParams, Link, useNavigate } from "@/lib/router";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 
-const ARTIFACTS_PAGE_SIZE = 30;
-const SEARCH_DEBOUNCE_MS = 250;
+/** Audit P1 (HIS-2659, performance): a bigger page saves round trips on a flat list. */
+const ARTIFACTS_PAGE_SIZE = 50;
+/** Perceived speed matters more than the last keystroke: 200 ms. */
+const SEARCH_DEBOUNCE_MS = 200;
 
 export const ARTIFACT_KIND_FILTERS: { value: ArtifactKindFilter; label: string }[] = [
-  { value: "all", label: "All" },
-  { value: "image", label: "Images" },
-  { value: "video", label: "Videos" },
-  { value: "document", label: "Documents" },
-  { value: "text", label: "Text" },
-  { value: "file", label: "Files" },
+  { value: "all", label: "Alles" },
+  { value: "image", label: "Afbeeldingen" },
+  { value: "video", label: "Video" },
+  { value: "document", label: "Documenten" },
+  { value: "text", label: "Tekst" },
+  { value: "file", label: "Bestanden" },
 ];
 
-export const ARTIFACT_GROUP_OPTIONS: { value: ArtifactGroupBy; label: string }[] = [
-  { value: "none", label: "None" },
-  { value: "task", label: "Task" },
-  { value: "parent_task", label: "Parent task" },
-];
+// Grouping lives in Expert Mode now (HIS-2659 item 6); re-exported so the
+// Storybook harness keeps a single definition to render against.
+export { ARTIFACT_GROUP_OPTIONS, artifactGroupByLabel } from "@/components/artifacts/ArtifactExpertPanel";
 
 const KIND_VALUES = new Set(ARTIFACT_KIND_FILTERS.map((filter) => filter.value));
 
 function parseGroupBy(value: string | null): ArtifactGroupBy {
   if (value === "none" || value === "task" || value === "parent_task") return value;
-  return "task";
+  // Default is the flat grid: grouping is an expert affordance, not the entry view.
+  return "none";
 }
 
 function parseKind(value: string | null): ArtifactKindFilter {
@@ -57,14 +59,19 @@ function parseKind(value: string | null): ArtifactKindFilter {
     : "all";
 }
 
-export function artifactGroupByLabel(value: ArtifactGroupBy): string {
-  return ARTIFACT_GROUP_OPTIONS.find((option) => option.value === value)?.label ?? "None";
-}
-
+/**
+ * Artifacts (HIS-2659 Deel A).
+ *
+ * Structure, top to bottom: HEADER / PRIORITEITSPANEEL / RECENTE ARTIFACTS /
+ * ALLE ARTIFACTS / EXPERT MODE. The first screen has to answer, within three
+ * seconds: what is new, what needs action, what failed, what matters and which
+ * artifact to open.
+ */
 export function Artifacts() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
 
   const kind = parseKind(searchParams.get("kind"));
   const query = searchParams.get("q") ?? "";
@@ -77,6 +84,7 @@ export function Artifacts() {
   const grouping = groupBy !== "none";
   const viewingStackList = grouping && !groupIssueId;
   const viewingSelectedStack = grouping && !!groupIssueId;
+  const filtering = kind !== "all" || query.length > 0;
 
   // Keep the search box in sync when the committed query changes from outside
   // (e.g. back/forward navigation or a shared URL), without clobbering in-flight
@@ -129,7 +137,7 @@ export function Artifacts() {
       updateParams((next) => {
         // Switching the grouping mode always returns to the stack list.
         next.delete("groupIssueId");
-        if (value === "task") next.delete("groupBy");
+        if (value === "none") next.delete("groupBy");
         else next.set("groupBy", value);
       });
     },
@@ -152,8 +160,7 @@ export function Artifacts() {
   const stackTo = useCallback(
     (issueId: string): To =>
       buildTo((next) => {
-        if (groupBy === "task") next.delete("groupBy");
-        else if (groupBy !== "none") next.set("groupBy", groupBy);
+        if (groupBy !== "none") next.set("groupBy", groupBy);
         next.set("groupIssueId", issueId);
       }),
     [buildTo, groupBy],
@@ -162,10 +169,9 @@ export function Artifacts() {
   const backToStacksTo = useMemo<To>(
     () =>
       buildTo((next) => {
-        if (groupBy === "task") next.delete("groupBy");
         next.delete("groupIssueId");
       }),
-    [buildTo, groupBy],
+    [buildTo],
   );
 
   const {
@@ -190,6 +196,11 @@ export function Artifacts() {
     enabled: !!selectedCompanyId,
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+    // While a new search runs, keep the previous grid on screen: an empty flash
+    // is both a layout shift (CLS) and a worse answer than the previous page.
+    placeholderData: query.length > 0 ? keepPreviousData : undefined,
+    staleTime: 30_000,
+    gcTime: 5 * 60_000,
   });
 
   useEffect(() => {
@@ -199,7 +210,7 @@ export function Artifacts() {
       if (entries.some((entry) => entry.isIntersecting)) {
         void fetchNextPage();
       }
-    }, { rootMargin: "320px 0px" });
+    }, { rootMargin: "600px 0px" });
     observer.observe(target);
     return () => observer.disconnect();
   }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
@@ -213,7 +224,15 @@ export function Artifacts() {
     () => data?.pages.map((page) => page.selectedGroup).find(Boolean) ?? null,
     [data],
   );
+  const nextCursor = data?.pages.at(-1)?.nextCursor ?? null;
   const searching = query.length > 0;
+
+  // Item 3: `createdAt` is the sort key, newest first (falling back to the
+  // update time for payloads the projection has not extended yet).
+  const sortedArtifacts = useMemo(
+    () => [...artifacts].sort((a, b) => artifactSortTime(b) - artifactSortTime(a)),
+    [artifacts],
+  );
 
   useEffect(() => {
     if (viewingSelectedStack && selectedGroup) {
@@ -227,102 +246,109 @@ export function Artifacts() {
   }, [setBreadcrumbs, viewingSelectedStack, selectedGroup]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Package} message="Select an organization to view artifacts." />;
+    return <EmptyState icon={Package} message="Kies een organisatie om artifacts te bekijken." />;
   }
 
   const showGroupCards = viewingStackList;
-  const items = showGroupCards ? groups : artifacts;
+  const itemCount = showGroupCards ? groups.length : sortedArtifacts.length;
+  const activeKindLabel =
+    ARTIFACT_KIND_FILTERS.find((filter) => filter.value === kind)?.label ?? "Alles";
 
-  const emptyMessage = showGroupCards
-    ? searching
-      ? "No artifact stacks match this search."
-      : "No artifact stacks yet."
-    : searching
-      ? "No artifacts match this search."
-      : viewingSelectedStack
-        ? "No artifacts in this stack match the current filters."
-        : kind === "all"
-          ? "No artifacts yet. Outputs attached to issues will appear here."
-          : "No artifacts of this type yet.";
+  // Item 7: exactly one empty state, with a next step that actually works.
+  const resetFilters = () => {
+    setDraftQuery("");
+    updateParams((next) => {
+      next.delete("kind");
+      next.delete("q");
+    });
+  };
+
+  const goToTasks = () => navigate("/issues");
 
   return (
-    <div className="w-full max-w-6xl space-y-5">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="relative w-full sm:max-w-sm">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={draftQuery}
-            onChange={(event) => setDraftQuery(event.currentTarget.value)}
-            placeholder="Search artifacts..."
-            aria-label="Search artifacts"
-            className="h-9 pl-9 pr-9 text-sm"
-          />
-          {draftQuery.length > 0 ? (
-            <button
-              type="button"
-              onClick={() => setDraftQuery("")}
-              aria-label="Clear artifact search"
-              className="absolute right-2 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
+    <div data-testid="artifacts-page" className="w-full max-w-6xl space-y-6">
+      {/* HEADER ------------------------------------------------------------ */}
+      <header className="space-y-3">
+        <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+          <div>
+            <h1 className="text-lg font-semibold text-foreground">Artifacts</h1>
+            <p className="text-sm text-muted-foreground">Alles wat je taken hebben opgeleverd.</p>
+          </div>
+          {!isLoading && itemCount > 0 ? (
+            <span className="text-(length:--text-micro) text-muted-foreground/70">
+              {showGroupCards
+                ? `${itemCount} ${itemCount === 1 ? "stapel" : "stapels"}`
+                : `${itemCount} ${itemCount === 1 ? "artifact" : "artifacts"}`}
+            </span>
           ) : null}
         </div>
 
-        <div className="flex flex-wrap items-center gap-1.5">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                aria-label={`Group artifacts (currently ${artifactGroupByLabel(groupBy)})`}
-                title="Group artifacts"
-                data-testid="artifact-group-control"
-                data-group-by={groupBy}
-                className={cn("h-8 w-8 shrink-0", grouping && "bg-accent")}
-              >
-                <Layers className="h-3.5 w-3.5" aria-hidden="true" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-44">
-              <DropdownMenuLabel>Group by</DropdownMenuLabel>
-              {ARTIFACT_GROUP_OPTIONS.map((option) => (
-                <DropdownMenuItem
-                  key={option.value}
-                  data-testid={`artifact-group-option-${option.value}`}
-                  aria-selected={groupBy === option.value}
-                  onSelect={() => selectGroupBy(option.value)}
-                  className="justify-between"
-                >
-                  {option.label}
-                  {groupBy === option.value ? <Check className="h-3.5 w-3.5" /> : null}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-
-          <div className="flex flex-wrap items-center gap-1.5" role="tablist" aria-label="Filter artifacts by type">
-            {ARTIFACT_KIND_FILTERS.map((filter) => (
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div className="relative w-full sm:max-w-sm">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={draftQuery}
+              onChange={(event) => setDraftQuery(event.currentTarget.value)}
+              placeholder="Zoek in artifacts..."
+              aria-label="Zoek in artifacts"
+              className="h-9 pl-9 pr-9 text-sm"
+            />
+            {draftQuery.length > 0 ? (
               <button
-                key={filter.value}
                 type="button"
-                role="tab"
-                aria-selected={kind === filter.value}
-                onClick={() => selectKind(filter.value)}
-                className={cn(
-                  "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
-                  kind === filter.value
-                    ? "bg-accent text-foreground"
-                    : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
-                )}
+                onClick={() => setDraftQuery("")}
+                aria-label="Zoekopdracht wissen"
+                className="absolute right-2 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
               >
-                {filter.label}
+                <X className="h-3.5 w-3.5" />
               </button>
-            ))}
+            ) : null}
           </div>
+
+          {/* Item 6: filters live behind a disclosure, they are not the entry point. */}
+          <details
+            data-testid="artifact-filter-disclosure"
+            className="group shrink-0"
+          >
+            <summary className="inline-flex h-9 cursor-pointer list-none items-center gap-1.5 rounded-md border border-input bg-background px-3 text-xs font-medium text-muted-foreground shadow-xs transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+              <SlidersHorizontal className="h-3.5 w-3.5" aria-hidden="true" />
+              Filters
+              {kind !== "all" ? (
+                <span className="rounded bg-accent px-1.5 py-0.5 text-(length:--text-micro) text-foreground">
+                  {activeKindLabel}
+                </span>
+              ) : null}
+              <ChevronRight
+                className="h-3.5 w-3.5 transition-transform group-open:rotate-90"
+                aria-hidden="true"
+              />
+            </summary>
+            <div
+              className="mt-2 flex flex-wrap items-center gap-1.5 rounded-md border border-border bg-card p-2"
+              role="tablist"
+              aria-label="Filter artifacts op type"
+            >
+              {ARTIFACT_KIND_FILTERS.map((filter) => (
+                <button
+                  key={filter.value}
+                  type="button"
+                  role="tab"
+                  aria-selected={kind === filter.value}
+                  onClick={() => selectKind(filter.value)}
+                  className={cn(
+                    "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+                    kind === filter.value
+                      ? "bg-accent text-foreground"
+                      : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                  )}
+                >
+                  {filter.label}
+                </button>
+              ))}
+            </div>
+          </details>
         </div>
-      </div>
+      </header>
 
       {viewingSelectedStack ? (
         <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -332,7 +358,7 @@ export function Artifacts() {
             className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
           >
             <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
-            All stacks
+            Alle stapels
           </Link>
           {selectedGroup ? (
             <span className="truncate text-muted-foreground">
@@ -346,31 +372,152 @@ export function Artifacts() {
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       {isLoading ? (
-        <PageSkeleton variant="list" />
-      ) : items.length === 0 ? (
-        <EmptyState icon={showGroupCards ? Layers : Package} message={emptyMessage} />
+        // Item 8 + CLS (HIS-2659): the first paint mirrors the loaded page line
+        // for line, shelf and section headings included, with placeholders of
+        // the same height as a card that carries a chip. The chip is the part
+        // the criterion names, and it is reserved on both sides of the load
+        // (`ArtifactStatusChipPlaceholder` in the card body), so a chip
+        // appearing cannot change a row's height.
+        //
+        // The priority panel is deliberately NOT reserved here. Item 5 makes
+        // it conditional — invisible when nothing needs attention — and a slot
+        // that is reserved in the skeleton but left empty on a quiet list is
+        // not a fix, it is the same shift with the sign flipped: the page would
+        // shrink by the panel's height instead of growing by it. It is built
+        // as a single fixed-height strip for exactly that reason: the inserted
+        // height is the shift, so the height is what gets taken out.
+        //
+        // The `key`s below are not decoration: React matches the two branches
+        // by key, so the very same <section> nodes stay in place and only their
+        // contents fill in. Without them React reuses the first skeleton
+        // section for the recents shelf, which moves that node up by the height
+        // of the section it replaces and shows up as a layout shift.
+        <>
+          {/* The priority slot is rendered in this branch too: it is the same
+              box on both sides of the load, so the panel appearing inside it
+              moves nothing (HIS-2659 criterion e). */}
+          {!showGroupCards ? <ArtifactPriorityPanelSlot key="artifact-priority" /> : null}
+
+          <section key="artifact-recent" aria-labelledby="artifact-recent-heading" className="space-y-2">
+            <h2
+              id="artifact-recent-heading"
+              className="text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+            >
+              Recente artifacts
+            </h2>
+            <ArtifactRecentListSkeleton />
+          </section>
+
+          <section key="artifact-all" aria-labelledby="artifact-all-heading" className="space-y-3">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <h2
+                id="artifact-all-heading"
+                className="text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+              >
+                Alle artifacts
+              </h2>
+            </div>
+            <ArtifactCardSkeletonGrid />
+          </section>
+        </>
+      ) : itemCount === 0 ? (
+        <EmptyState
+          icon={showGroupCards ? Layers : Package}
+          title={
+            searching
+              ? "Geen artifact gevonden"
+              : filtering
+                ? `Nog geen ${activeKindLabel.toLowerCase()}`
+                : "Nog geen artifacts"
+          }
+          message={
+            searching
+              ? "Geen enkel artifact matcht deze zoekopdracht."
+              : "Zodra je taken iets opleveren, verschijnt het hier."
+          }
+          action={filtering ? "Toon alles" : "Naar taken"}
+          onAction={filtering ? resetFilters : goToTasks}
+          hideActionIcon
+        />
       ) : (
         <>
-          <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
-            {showGroupCards
-              ? groups.map((group) => (
-                  <ArtifactGroupCard key={group.id} group={group} to={stackTo(group.issue.id)} />
-                ))
-              : artifacts.map((artifact) => (
-                  <ArtifactCard key={`${artifact.source}:${artifact.id}`} artifact={artifact} />
-                ))}
-          </div>
-          <div ref={loadMoreRef} className="flex min-h-10 items-center justify-center pb-2 text-xs text-muted-foreground">
-            {isFetchingNextPage
-              ? "Loading more artifacts..."
-              : hasNextPage
-                ? null
-                : isFetching
-                  ? "Updating artifacts..."
-                  : null}
-          </div>
+          {/* PRIORITEITSPANEEL -------------------------------------------- */}
+          {/* The panel lives inside a slot that the loading branch renders too
+              (same position, same height), so it appearing here moves nothing
+              (HIS-2659 criterion e). Item 5 is untouched: on a list where
+              nothing needs attention the slot stays empty and nothing renders. */}
+          {!showGroupCards ? <ArtifactPriorityPanelSlot key="artifact-priority" artifacts={sortedArtifacts} /> : null}
+
+          {/* RECENTE ARTIFACTS ------------------------------------------- */}
+          {!showGroupCards && sortedArtifacts.length > 0 ? (
+            <section key="artifact-recent" aria-labelledby="artifact-recent-heading" className="space-y-2">
+              <h2
+                id="artifact-recent-heading"
+                className="text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+              >
+                Recente artifacts
+              </h2>
+              <ArtifactRecentList artifacts={sortedArtifacts} />
+            </section>
+          ) : null}
+
+          {/* ALLE ARTIFACTS ---------------------------------------------- */}
+          <section key="artifact-all" aria-labelledby="artifact-all-heading" className="space-y-3">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <h2
+                id="artifact-all-heading"
+                className="text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+              >
+                Alle artifacts
+              </h2>
+              <span className="text-(length:--text-micro) text-muted-foreground/70">
+                Gesorteerd op: nieuwste eerst
+              </span>
+            </div>
+
+            <div className={ARTIFACT_GRID_CLASS}>
+              {showGroupCards
+                ? groups.map((group) => (
+                    <ArtifactGroupCard key={group.id} group={group} to={stackTo(group.issue.id)} />
+                  ))
+                : sortedArtifacts.map((artifact) => (
+                    <ArtifactCard key={`${artifact.source}:${artifact.id}`} artifact={artifact} />
+                  ))}
+            </div>
+
+            <div
+              ref={loadMoreRef}
+              className="flex min-h-10 flex-wrap items-center justify-center gap-3 pb-2 text-xs text-muted-foreground"
+            >
+              {isFetchingNextPage ? <span>Meer artifacts laden...</span> : null}
+              {!isFetchingNextPage && hasNextPage ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void fetchNextPage()}
+                  data-testid="artifact-load-more"
+                >
+                  Meer laden
+                </Button>
+              ) : null}
+              {!isFetchingNextPage && !hasNextPage && isFetching ? (
+                <span>Artifacts bijwerken...</span>
+              ) : null}
+            </div>
+          </section>
         </>
       )}
+
+      {/* EXPERT MODE -------------------------------------------------------- */}
+      <ArtifactExpertPanel
+        artifacts={sortedArtifacts}
+        groupBy={groupBy}
+        onSelectGroupBy={selectGroupBy}
+        limit={ARTIFACTS_PAGE_SIZE}
+        nextCursor={nextCursor}
+        loadedPages={data?.pages.length ?? 0}
+      />
     </div>
   );
 }
