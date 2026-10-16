@@ -18,7 +18,7 @@ import {
   ArtifactRecentListSkeleton,
   ARTIFACT_GRID_CLASS,
 } from "../components/artifacts/ArtifactCardSkeleton";
-import { ArtifactPriorityPanel } from "../components/artifacts/ArtifactPriorityPanel";
+import { ArtifactPriorityPanelSlot } from "../components/artifacts/ArtifactPriorityPanel";
 import { ArtifactRecentList } from "../components/artifacts/ArtifactRecentList";
 import { ArtifactExpertPanel } from "../components/artifacts/ArtifactExpertPanel";
 import { artifactSortTime } from "../lib/artifact-display";
@@ -266,7 +266,7 @@ export function Artifacts() {
   const goToTasks = () => navigate("/issues");
 
   return (
-    <div className="w-full max-w-6xl space-y-6">
+    <div data-testid="artifacts-page" className="w-full max-w-6xl space-y-6">
       {/* HEADER ------------------------------------------------------------ */}
       <header className="space-y-3">
         <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
@@ -374,10 +374,18 @@ export function Artifacts() {
       {isLoading ? (
         // Item 8 + CLS (HIS-2659): the first paint mirrors the loaded page line
         // for line, shelf and section headings included, with placeholders of
-        // the same height as a card that carries a chip. Nothing below the
-        // header moves when the data lands. The priority panel is the one part
-        // that cannot be reserved: item 5 keeps it invisible when there is
-        // nothing to do, so there is no height to reserve for it.
+        // the same height as a card that carries a chip. The chip is the part
+        // the criterion names, and it is reserved on both sides of the load
+        // (`ArtifactStatusChipPlaceholder` in the card body), so a chip
+        // appearing cannot change a row's height.
+        //
+        // The priority panel is deliberately NOT reserved here. Item 5 makes
+        // it conditional — invisible when nothing needs attention — and a slot
+        // that is reserved in the skeleton but left empty on a quiet list is
+        // not a fix, it is the same shift with the sign flipped: the page would
+        // shrink by the panel's height instead of growing by it. It is built
+        // as a single fixed-height strip for exactly that reason: the inserted
+        // height is the shift, so the height is what gets taken out.
         //
         // The `key`s below are not decoration: React matches the two branches
         // by key, so the very same <section> nodes stay in place and only their
@@ -385,6 +393,11 @@ export function Artifacts() {
         // section for the recents shelf, which moves that node up by the height
         // of the section it replaces and shows up as a layout shift.
         <>
+          {/* The priority slot is rendered in this branch too: it is the same
+              box on both sides of the load, so the panel appearing inside it
+              moves nothing (HIS-2659 criterion e). */}
+          {!showGroupCards ? <ArtifactPriorityPanelSlot key="artifact-priority" /> : null}
+
           <section key="artifact-recent" aria-labelledby="artifact-recent-heading" className="space-y-2">
             <h2
               id="artifact-recent-heading"
@@ -429,9 +442,11 @@ export function Artifacts() {
       ) : (
         <>
           {/* PRIORITEITSPANEEL -------------------------------------------- */}
-          {!showGroupCards ? (
-            <ArtifactPriorityPanel key="artifact-priority" artifacts={sortedArtifacts} />
-          ) : null}
+          {/* The panel lives inside a slot that the loading branch renders too
+              (same position, same height), so it appearing here moves nothing
+              (HIS-2659 criterion e). Item 5 is untouched: on a list where
+              nothing needs attention the slot stays empty and nothing renders. */}
+          {!showGroupCards ? <ArtifactPriorityPanelSlot key="artifact-priority" artifacts={sortedArtifacts} /> : null}
 
           {/* RECENTE ARTIFACTS ------------------------------------------- */}
           {!showGroupCards && sortedArtifacts.length > 0 ? (
