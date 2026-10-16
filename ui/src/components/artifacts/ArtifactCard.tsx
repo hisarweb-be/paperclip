@@ -12,7 +12,7 @@ import {
   artifactOriginLabel,
 } from "@/lib/artifact-display";
 import { artifactStatus } from "@/lib/artifact-status";
-import { ArtifactStatusChip } from "@/components/artifacts/ArtifactStatusChip";
+import { ArtifactStatusChip, ArtifactStatusChipPlaceholder } from "@/components/artifacts/ArtifactStatusChip";
 
 interface ArtifactCardProps {
   artifact: CompanyArtifact;
@@ -263,12 +263,19 @@ export function ArtifactCard({ artifact }: ArtifactCardProps) {
 
       <div className="flex flex-1 flex-col gap-1 p-3">
         {/* The chip lives in the card body, never on top of the preview: an
-            overlaid chip covered the first line of a text preview (HIS-2659). */}
-        {status ? (
-          <div className="flex min-h-5 items-center">
+            overlaid chip covered the first line of a text preview (HIS-2659).
+
+            The row is always rendered, chip or no chip: a card that only grows
+            a row once a chip arrives is exactly the layout shift the CLS
+            criterion forbids. The placeholder is the chip's own box, so the
+            reserved height is the rendered height. */}
+        <div className="flex min-h-5 items-center">
+          {status ? (
             <ArtifactStatusChip status={status} />
-          </div>
-        ) : null}
+          ) : (
+            <ArtifactStatusChipPlaceholder />
+          )}
+        </div>
 
         <h3
           className="h-5 truncate text-sm font-medium leading-5 text-foreground/85"

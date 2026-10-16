@@ -10,7 +10,7 @@ import {
   createdAtText,
 } from "@/lib/artifact-display";
 import { artifactStatus } from "@/lib/artifact-status";
-import { ArtifactStatusChip } from "@/components/artifacts/ArtifactStatusChip";
+import { ArtifactStatusChip, ArtifactStatusChipPlaceholder } from "@/components/artifacts/ArtifactStatusChip";
 
 const MAX_ROWS = 5;
 
@@ -51,7 +51,11 @@ export function ArtifactRecentList({ artifacts }: { artifacts: CompanyArtifact[]
               disableIssueQuicklook
               className="flex items-center gap-2 px-3 py-2 transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
-              {status ? <ArtifactStatusChip status={status} className="shrink-0" /> : null}
+              {status ? (
+                <ArtifactStatusChip status={status} className="shrink-0" />
+              ) : (
+                <ArtifactStatusChipPlaceholder />
+              )}
               <span className="min-w-0 flex-1 truncate text-sm text-foreground/85">
                 {artifactFilename(artifact)}
               </span>

@@ -478,14 +478,14 @@ describe("Artifacts page", () => {
 
   // ---- priority panel (acceptance criterion a + c) ------------------------
 
-  it("puts the priority panel with a red chip in the first screen without an extra API call", async () => {
+  it("puts the priority panel with a failure chip in the first screen without an extra API call", async () => {
     artifactsApiMock.list.mockResolvedValue({
       artifacts: [
         sampleArtifact({ id: "artifact-ok", title: "Fine Artifact" }),
         sampleArtifact({
           id: "artifact-failed",
           title: "Broken Render",
-          turnTerminalState: "failed",
+          status: "failed",
           createdAt: "2026-06-02T09:00:00.000Z",
         }),
       ],
@@ -497,7 +497,7 @@ describe("Artifacts page", () => {
     await waitForAssertion(() => {
       const panel = container.querySelector('[data-testid="artifact-priority-panel"]');
       expect(panel).not.toBeNull();
-      expect(panel?.getAttribute("data-red")).toBe("1");
+      expect(panel?.getAttribute("data-failure")).toBe("1");
       expect(panel?.textContent).toContain("Aandacht nodig");
       expect(panel?.textContent).toContain("Broken Render");
       expect(panel?.textContent).toContain("1 artifact vraagt actie");
@@ -506,8 +506,8 @@ describe("Artifacts page", () => {
     const chip = container.querySelector(
       '[data-testid="artifact-priority-panel"] [data-testid="artifact-status-chip"]',
     );
-    expect(chip?.getAttribute("data-tone")).toBe("red");
-    expect(chip?.getAttribute("data-reason")).toBe("turnTerminalState=failed");
+    expect(chip?.getAttribute("data-tone")).toBe("failure");
+    expect(chip?.getAttribute("data-reason")).toBe("status=failed");
 
     // Panel order: it sits directly under the header, so it is on the first
     // screen at 1440x900 and costs no extra request (criterion a + c).
