@@ -16,7 +16,7 @@ const MAX_ROWS = 4;
  */
 export function ArtifactPriorityPanel({ artifacts }: { artifacts: CompanyArtifact[] }) {
   const summary = summarizeArtifactStatuses(artifacts);
-  if (summary.red === 0 && summary.orange === 0) return null;
+  if (summary.failure === 0 && summary.review === 0) return null;
 
   const visible = summary.attention.slice(0, MAX_ROWS);
   const hidden = summary.attention.length - visible.length;
@@ -24,8 +24,8 @@ export function ArtifactPriorityPanel({ artifacts }: { artifacts: CompanyArtifac
   return (
     <section
       data-testid="artifact-priority-panel"
-      data-red={summary.red}
-      data-orange={summary.orange}
+      data-failure={summary.failure}
+      data-review={summary.review}
       aria-labelledby="artifact-priority-heading"
       className="rounded-lg border border-border bg-card p-4"
     >
@@ -38,7 +38,7 @@ export function ArtifactPriorityPanel({ artifacts }: { artifacts: CompanyArtifac
           {summary.attention.length === 1
             ? "1 artifact vraagt actie"
             : `${summary.attention.length} artifacts vragen actie`}
-          {summary.red > 0 ? ` · ${summary.red} gefaald` : ""}
+          {summary.failure > 0 ? ` · ${summary.failure} gefaald` : ""}
         </span>
       </div>
 

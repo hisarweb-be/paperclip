@@ -24,51 +24,13 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { GithubIcon } from "@/components/icons/github-icon";
 import { cn } from "@/lib/utils";
+import { chipCssVar, stateChipFor, type StateChip } from "@/lib/state-chip";
 
-type StateChip = {
-  label: string;
-  tone: "progress" | "failure" | "review" | "success" | "neutral";
-  dashed?: boolean;
-};
-
-/** Resting states stay quiet. A completed work product never gets a chip. */
-export function stateChipFor(
-  kind: IssueWorkProduct["type"],
-  status: string | null | undefined,
-  reviewState: IssueWorkProduct["reviewState"] | string | null | undefined,
-): StateChip | null {
-  if (reviewState === "changes_requested" || status === "changes_requested") {
-    return { label: "Changes requested", tone: "failure" };
-  }
-  if (reviewState === "needs_board_review" || status === "ready_for_review") {
-    return { label: "Review", tone: "review" };
-  }
-  if (["failed", "unhealthy", "down"].includes(status ?? "")) {
-    return { label: "Failed", tone: "failure" };
-  }
-  if (["pending", "opening"].includes(status ?? "")) {
-    return { label: status === "opening" ? "Opening" : "Pending", tone: "progress", dashed: true };
-  }
-  if (kind === "pull_request" && (status === "active" || status === "open")) {
-    return { label: "Open", tone: "progress" };
-  }
-  if (kind === "pull_request" && status === "draft") {
-    return { label: "Draft", tone: "review" };
-  }
-  if (kind === "pull_request" && status === "merged") {
-    return { label: "Merged", tone: "success" };
-  }
-  if (kind === "pull_request" && status === "closed") {
-    return { label: "Closed", tone: "neutral" };
-  }
-  if (kind === "runtime_service" && status === "active") {
-    return { label: "Running", tone: "progress" };
-  }
-  if (kind === "runtime_service" && status === "closed") {
-    return { label: "Stopped", tone: "failure" };
-  }
-  return null;
-}
+// The chip vocabulary lives in `lib/state-chip` so the artifacts page can reuse
+// it without importing this component (HIS-2659). Re-exported here to keep the
+// existing call sites — `IssueArtifactCard` and the protocol-card tests — working.
+export { stateChipFor } from "@/lib/state-chip";
+export type { StateChip } from "@/lib/state-chip";
 
 function stringMeta(metadata: Record<string, unknown> | null, ...keys: string[]): string | null {
   for (const key of keys) {
@@ -104,15 +66,7 @@ function urlLabel(url: string | null): string | null {
 }
 
 function Chip({ chip }: { chip: StateChip }) {
-  const cssVar = chip.tone === "failure"
-    ? "--status-task-blocked"
-    : chip.tone === "success"
-      ? "--status-task-done"
-      : chip.tone === "neutral"
-        ? "--status-task-cancelled"
-    : chip.tone === "review"
-      ? "--status-task-in_review"
-      : "--status-task-in_progress";
+  const cssVar = chipCssVar(chip.tone);
   return (
     <span
       className={cn(

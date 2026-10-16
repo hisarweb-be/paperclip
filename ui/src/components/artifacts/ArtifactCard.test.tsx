@@ -128,34 +128,49 @@ describe("ArtifactCard", () => {
     expect(markup).not.toContain(">Downloaden<");
   });
 
-  // ---- acceptance criterion (c): red chip, no extra API call --------------
+  // ---- acceptance criterion (c): failure chip, no extra API call ----------
+  //
+  // The revised criterion reads the failure off the artifact itself
+  // (`status = failed` or `healthStatus = unhealthy`), not off a run field:
+  // `turnTerminalState` belongs to run finalization and is not on an artifact.
 
-  it("shows a red chip for a failed run without calling the API", () => {
+  it("shows a failure chip for a failed artifact without calling the API", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
 
     const markup = renderToStaticMarkup(
-      <ArtifactCard artifact={makeArtifact({ turnTerminalState: "failed" })} />,
+      <ArtifactCard artifact={makeArtifact({ status: "failed" })} />,
     );
 
-    expect(markup).toContain('data-status-tone="red"');
+    expect(markup).toContain('data-status-tone="failure"');
     expect(markup).toContain('data-testid="artifact-status-chip"');
-    expect(markup).toContain('data-tone="red"');
-    expect(markup).toContain('data-reason="turnTerminalState=failed"');
-    expect(markup).toContain("Gefaald");
+    expect(markup).toContain('data-tone="failure"');
+    expect(markup).toContain('data-reason="status=failed"');
+    // The label is the house vocabulary's, shared with the work-product chips.
+    expect(markup).toContain("Failed");
     // Derived from the payload we already have: nothing is fetched per card.
     expect(fetchSpy).not.toHaveBeenCalled();
 
     fetchSpy.mockRestore();
   });
 
+  it("shows a failure chip for an unhealthy artifact too", () => {
+    const markup = renderToStaticMarkup(
+      <ArtifactCard artifact={makeArtifact({ healthStatus: "unhealthy" })} />,
+    );
+    expect(markup).toContain('data-tone="failure"');
+    expect(markup).toContain('data-reason="healthStatus=unhealthy"');
+  });
+
   it("shows at most one chip and renders chip-free for pre-projection payloads", () => {
-    const withReview = renderToStaticMarkup(
+    // One chip per card even when several status fields are set. Which one wins
+    // is the house mapper's decision, not this card's (HIS-2659).
+    const withBoth = renderToStaticMarkup(
       <ArtifactCard
-        artifact={makeArtifact({ turnTerminalState: "failed", reviewState: "pending", status: "active" })}
+        artifact={makeArtifact({ status: "failed", reviewState: "needs_board_review" })}
       />,
     );
-    expect(withReview.match(/data-testid="artifact-status-chip"/g)?.length).toBe(1);
-    expect(withReview).toContain('data-tone="red"');
+    expect(withBoth.match(/data-testid="artifact-status-chip"/g)?.length).toBe(1);
+    expect(withBoth).toContain('data-reason="reviewState=needs_board_review"');
 
     const bare = renderToStaticMarkup(<ArtifactCard artifact={makeArtifact()} />);
     expect(bare).not.toContain('data-testid="artifact-status-chip"');
@@ -173,7 +188,7 @@ describe("ArtifactCard", () => {
           openPath: null,
           downloadPath: null,
           previewText: "90 dagenplan: 3 betalende klanten tegen 26 december.",
-          turnTerminalState: "failed",
+          status: "failed",
         })}
       />,
     );
@@ -188,7 +203,7 @@ describe("ArtifactCard", () => {
     // the first line of the excerpt, so the preview must not contain it.
     expect(preview!.contains(chip!)).toBe(false);
     expect(preview!.textContent).toContain("90 dagenplan");
-    expect(doc.body.textContent).toContain("Gefaald");
+    expect(doc.body.textContent).toContain("Failed");
   });
 
   // ---- performance items -------------------------------------------------
@@ -370,14 +385,14 @@ function bodyOf(markup: string, rootSelector: string): HTMLElement {
 
 describe("ArtifactCardSkeleton", () => {
   it("reserves the same rows as a loaded card that carries a chip and an origin line", () => {
-    // A card that renders *every* conditional row: red chip (`turnTerminalState`)
-    // and the origin line (`issue.identifier · agent`).
+    // A card that renders *every* conditional row: a failure chip
+    // (`status = failed`) and the origin line (`issue.identifier · agent`).
     const cardMarkup = renderToStaticMarkup(
-      <ArtifactCard artifact={makeArtifact({ turnTerminalState: "failed" })} />,
+      <ArtifactCard artifact={makeArtifact({ status: "failed" })} />,
     );
     const skeletonMarkup = renderToStaticMarkup(<ArtifactCardSkeleton />);
 
-    expect(cardMarkup).toContain('data-status-tone="red"');
+    expect(cardMarkup).toContain('data-status-tone="failure"');
     expect(cardMarkup).toContain("PAP-10306 · ClaudeCoder");
 
     const cardBody = bodyOf(cardMarkup, '[data-testid="artifact-card"]');
@@ -413,7 +428,7 @@ describe("ArtifactCardSkeleton", () => {
     // classes is what makes the reservation exact; the line box comes from an
     // invisible label, so no raw pixel value is needed.
     const cardMarkup = renderToStaticMarkup(
-      <ArtifactCard artifact={makeArtifact({ turnTerminalState: "failed" })} />,
+      <ArtifactCard artifact={makeArtifact({ status: "failed" })} />,
     );
     const skeletonBody = bodyOf(
       renderToStaticMarkup(<ArtifactCardSkeleton />),
@@ -426,17 +441,22 @@ describe("ArtifactCardSkeleton", () => {
     const chipRow = skeletonBody.children[0] as HTMLElement;
     const placeholder = chipRow.firstElementChild as HTMLElement;
 
-    const boxClasses = ["inline-flex", "items-center", "gap-1", "rounded-full", "border", "px-2", "py-0.5"];
+    // The placeholder is the chip's own box: every box class that decides the
+    // height (padding, border, line box) is shared, so the two cannot drift.
+    const boxClasses = ["inline-flex", "items-center", "rounded-full", "border", "px-2", "py-0.5"];
     for (const boxClass of boxClasses) {
       expect(chip.className.split(/\s+/)).toContain(boxClass);
       expect(placeholder.className.split(/\s+/)).toContain(boxClass);
     }
     expect(chip.className).toContain("text-(length:--text-micro)");
     expect(placeholder.className).toContain("text-(length:--text-micro)");
-    // The line box itself: an invisible label inside the placeholder.
-    const label = placeholder.querySelector("span") as HTMLElement;
-    expect(label.className).toContain("invisible");
-    expect(label.textContent?.length).toBeGreaterThan(0);
+    // Both pin the line box to the font size, so the height is the same number.
+    expect(chip.className).toContain("leading-none");
+    expect(placeholder.className).toContain("leading-none");
+    // The placeholder is invisible but keeps the text, which is what gives it
+    // the line box of a real chip label.
+    expect(placeholder.className).toContain("invisible");
+    expect(placeholder.textContent?.length).toBeGreaterThan(0);
   });
 
   it("reserves the meta and origin lines with a text line box, not a bare h-4", () => {
@@ -491,7 +511,7 @@ describe("ArtifactCardSkeleton", () => {
     realHost.innerHTML = renderToStaticMarkup(
       <ArtifactRecentList
         artifacts={Array.from({ length: 5 }, (_, index) =>
-          makeArtifact({ id: `art-${index}`, turnTerminalState: "failed" }),
+          makeArtifact({ id: `art-${index}`, status: "failed" }),
         )}
       />,
     );
@@ -507,7 +527,7 @@ describe("ArtifactCardSkeleton", () => {
     // 22.5px content instead of shrinking to the 20px of an `h-5` guess.
     const chip = realRow.querySelector('[data-testid="artifact-status-chip"]') as HTMLElement;
     const placeholder = skeletonRow.firstElementChild as HTMLElement;
-    for (const boxClass of ["inline-flex", "items-center", "gap-1", "rounded-full", "border", "px-2", "py-0.5"]) {
+    for (const boxClass of ["inline-flex", "items-center", "rounded-full", "border", "px-2", "py-0.5"]) {
       expect(chip.className.split(/\s+/)).toContain(boxClass);
       expect(placeholder.className.split(/\s+/)).toContain(boxClass);
     }

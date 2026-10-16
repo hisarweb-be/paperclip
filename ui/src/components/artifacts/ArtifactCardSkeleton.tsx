@@ -1,4 +1,5 @@
 import { Skeleton } from "@/components/ui/skeleton";
+import { ArtifactStatusChipPlaceholder } from "@/components/artifacts/ArtifactStatusChip";
 import { cn } from "@/lib/utils";
 
 /**
@@ -49,14 +50,12 @@ export function ArtifactCardSkeleton() {
     >
       <Skeleton className="aspect-video w-full rounded-none" />
       <div className="flex flex-1 flex-col gap-1 p-3">
-        {/* chip row (loaded card: `flex min-h-5 items-center`). The chip itself
-            is `px-2 py-0.5` + 1px border + one `--text-micro` line box, so the
-            placeholder copies that box instead of guessing `h-5`: an `h-5`
-            pill is 2.5px shorter and the row would grow on load. */}
+        {/* chip row (loaded card: `flex min-h-5 items-center`). The placeholder
+            is the chip's own box — the loaded card reserves it unconditionally
+            (HIS-2659 CLS), so this is the same box on both sides of the load,
+            not a guess at `h-5` (which is 2.5px shorter and would grow). */}
         <div className="flex min-h-5 items-center">
-          <Skeleton className="inline-flex w-24 items-center gap-1 rounded-full border border-transparent px-2 py-0.5 text-(length:--text-micro) font-medium">
-            <span className="invisible">Status</span>
-          </Skeleton>
+          <ArtifactStatusChipPlaceholder />
         </div>
         {/* title (loaded card: `h-5` title line) */}
         <Skeleton className="h-5 w-3/4" />
@@ -102,11 +101,10 @@ export function ArtifactRecentListSkeleton({ rows = 5 }: { rows?: number }) {
     >
       {Array.from({ length: rows }, (_, index) => (
         <li key={index} className="flex items-center gap-2 px-3 py-2">
-          {/* The chip sets the row height (22.5px), so the placeholder copies
-              its box rather than guessing `h-5` (see ArtifactCardSkeleton). */}
-          <Skeleton className="inline-flex w-20 shrink-0 items-center gap-1 rounded-full border border-transparent px-2 py-0.5 text-(length:--text-micro) font-medium">
-            <span className="invisible">Status</span>
-          </Skeleton>
+          {/* The role of the chip row in the shelf. The loaded row reserves it
+              unconditionally (see {@link ArtifactRecentList}), so this is the
+              chip's own box on both sides of the load. */}
+          <ArtifactStatusChipPlaceholder />
           <Skeleton className="h-5 flex-1" />
           <TextLineSkeleton className="hidden w-28 shrink-0 sm:block" label="Document · 12 kB" />
           <TextLineSkeleton className="w-24 shrink-0" label="13 okt 2026" />
