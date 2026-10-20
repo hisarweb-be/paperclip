@@ -192,6 +192,7 @@ import {
 import { queueLiveRunnerPrpCommand } from "../realtime/runner-prp-ws.js";
 import { questionResponseDeliveryService } from "../services/question-response-delivery.js";
 import { emitAgentTaskRunById } from "../services/agent-task-run-telemetry.js";
+import { scheduleReassignmentHandoverBackstop } from "../services/reassignment-handover.js";
 import {
   createQueuedCommentQueue,
   QueuedCommentMutationError,
@@ -13454,13 +13455,15 @@ export function issueRoutes(
       // own run (for example handing work to a signoff reviewer).
       const issueMutationStopId = randomUUID();
       if (assigneeWillChange && existing.assigneeAgentId) {
-        await stopRunnerGoalForOwnershipChange({
+        const goalStopAction = await stopRunnerGoalForOwnershipChange({
           companyId: existing.companyId,
           issueId: existing.id,
           agentId: existing.assigneeAgentId,
         });
         const runToStopForReassignment = await resolveActiveIssueRun(existing);
-        if (runToStopForReassignment) {
+        if (runToStopForReassignment && !goalStopAction) {
+          // No runner goal to stop, so nothing bounds this run after the
+          // reassignment: cancel it before the assignee changes.
           const cancelled = await heartbeat.cancelRun(
             runToStopForReassignment.id,
             "Cancelled before issue reassignment",
@@ -13481,6 +13484,24 @@ export function issueRoutes(
             );
           }
           interruptedRunId = cancelled.id;
+        } else if (runToStopForReassignment) {
+          // HIS-3477: the runner goal is paused/cleared, so the old run keeps
+          // its current turn and the continuation gate refuses the next one
+          // with `issue_reassigned`. Hand over instead of killing the run.
+          // This run is not cancelled, so it claims no `issueMutationStopId`,
+          // is not recorded as `interruptedRunId` (a terminal transition in the
+          // same request must still be able to cancel it) and keeps the
+          // assignee-derived write lock (`409 issue_write_assignee_run_lock`).
+          // The backstop cancels it only if it is still active ten minutes from
+          // now.
+          scheduleReassignmentHandoverBackstop(
+            {
+              getRun: (runId) => heartbeat.getRun(runId),
+              cancelRun: (runId, reason, options) =>
+                heartbeat.cancelRun(runId, reason, options),
+            },
+            { runId: runToStopForReassignment.id, issueId: existing.id },
+          );
         }
       }
 
