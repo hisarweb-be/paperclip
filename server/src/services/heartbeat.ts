@@ -17049,19 +17049,42 @@ export function heartbeatService(
   }
 
   /**
-   * Ageing for the queued-run ordering in startNextQueuedRunForAgent.
+   * Ordering score for the queued-run ordering in startNextQueuedRunForAgent.
    *
-   * Without ageing, a `todo`-issue wake (rank 1) is passed forever by every
-   * newer `in_progress`-issue wake (rank 0) from the same agent: the class
-   * rank dominates and nothing ever promotes an older row. A queued run that
-   * has waited QUEUED_RUN_AGE_UP_MIN_DEFAULT minutes climbs one class, so it
-   * outranks fresh rank-0 work after three intervals.
+   * The comparator used to order by class rank (0 = dependency-ready
+   * in_progress issue, 1 = dependency-ready todo/backlog, 2 = no issue,
+   * 3 = dependency not ready) and only then by priority. A hard class rank
+   * means a `todo`-issue wake is passed forever by every newer `in_progress`
+   * wake of the same agent: the wake is never refused, it just never starts
+   * (HIS-3310/HIS-3507: 63 queued runs, none started, two cards waited 12.9h).
    *
-   * Dependency-blocked runs (rank 3) are never promoted: their blocker, not
-   * their age, decides when they may start. Ranks never go below 0, and
-   * priority plus createdAt still break ties inside an aged class.
+   * Ageing therefore runs on a composite score instead of on the class rank
+   * alone:
+   *
+   *   score = rank * QUEUED_RUN_PRIORITY_CLASSES + priorityRank
+   *         - QUEUED_RUN_PRIORITY_CLASSES * floor(waitedMinutes / ageUpMinutes)
+   *
+   * so a run climbs exactly one class per age-up interval while keeping its
+   * priority inside the class. A waiting todo/medium run (7) is level with
+   * fresh in_progress/medium work (2) after one interval and ahead of *every*
+   * fresh run (lowest fresh score: in_progress/critical = 0) after two.
+   *
+   * There is deliberately no floor at zero. With a floor at zero the aged run
+   * merely ties with fresh in_progress/critical work and the priority
+   * tie-break hands the slot back to the critical card, which is the measured
+   * gap: rank-only ageing still left 43 of 76 queued rows of the two busiest
+   * agents behind an in_progress/critical card. Without a floor the score
+   * falls monotonically with waiting time, so the longest waiting run always
+   * ends up first and no run can be starved.
+   *
+   * Dependency-blocked runs (rank 3) never age: their blocker, not their age,
+   * decides when they may start. Nothing is ever rejected, only reordered.
    */
   const QUEUED_RUN_AGE_UP_MIN_DEFAULT = 30;
+  // critical(0), high(1), medium(2), low(3) and the unknown fallback (4). The
+  // span keeps a whole class of priority below the next class rank, so mixing
+  // priority into the score is exactly as strict as the old two-step compare.
+  const QUEUED_RUN_PRIORITY_CLASSES = 5;
 
   function queuedRunAgeUpMinutes() {
     const raw = process.env.PAPERCLIP_QUEUE_AGE_UP_MIN;
@@ -17071,15 +17094,18 @@ export function heartbeatService(
       : QUEUED_RUN_AGE_UP_MIN_DEFAULT;
   }
 
-  function agedQueuedRunRank(
+  function queuedRunSortScore(
     baseRank: number,
+    priorityRank: number,
     createdAt: Date,
     now: number,
     ageUpMinutes: number,
   ) {
-    if (baseRank >= 3) return baseRank;
+    const baseScore = baseRank * QUEUED_RUN_PRIORITY_CLASSES + priorityRank;
+    if (baseRank >= 3) return baseScore;
     const waitedMinutes = Math.max(0, now - createdAt.getTime()) / 60_000;
-    return Math.max(0, baseRank - Math.floor(waitedMinutes / ageUpMinutes));
+    const agedClasses = Math.floor(waitedMinutes / ageUpMinutes);
+    return baseScore - QUEUED_RUN_PRIORITY_CLASSES * agedClasses;
   }
 
   async function listQueuedRunDependencyReadiness(
@@ -20172,21 +20198,23 @@ export function heartbeatService(
               : 1
             : 3
           : 2;
-        const leftAgedRank = agedQueuedRunRank(
+        const leftPriorityRank = issueRunPriorityRank(leftIssue?.priority);
+        const rightPriorityRank = issueRunPriorityRank(rightIssue?.priority);
+        const leftScore = queuedRunSortScore(
           leftRank,
+          leftPriorityRank,
           left.createdAt,
           queuedRunSortNow,
           queuedRunAgeUpMin,
         );
-        const rightAgedRank = agedQueuedRunRank(
+        const rightScore = queuedRunSortScore(
           rightRank,
+          rightPriorityRank,
           right.createdAt,
           queuedRunSortNow,
           queuedRunAgeUpMin,
         );
-        if (leftAgedRank !== rightAgedRank) return leftAgedRank - rightAgedRank;
-        const leftPriorityRank = issueRunPriorityRank(leftIssue?.priority);
-        const rightPriorityRank = issueRunPriorityRank(rightIssue?.priority);
+        if (leftScore !== rightScore) return leftScore - rightScore;
         if (leftPriorityRank !== rightPriorityRank)
           return leftPriorityRank - rightPriorityRank;
         return left.createdAt.getTime() - right.createdAt.getTime();

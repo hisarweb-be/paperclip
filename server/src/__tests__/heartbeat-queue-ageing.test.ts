@@ -398,4 +398,168 @@ describeEmbeddedPostgres("heartbeat queued run ageing", () => {
     const readyRun = await readRun(readyRunId);
     expect(readyRun?.startedAt ?? null).toBeNull();
   }, 40_000);
+
+  it("lets a waiting todo run overtake fresh in_progress critical work", async () => {
+    // The measured gap of HIS-3507: rank-only ageing left 43 of 76 queued rows
+    // behind an in_progress/critical card, because after ageing both runs sat
+    // in rank 0 and the priority tie-break handed the slot back to critical.
+    const { companyId, agentId } = await seedAgent();
+    const todoIssueId = randomUUID();
+    const inProgressIssueId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: todoIssueId,
+        companyId,
+        title: "Todo card waiting for hours",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        responsibleUserId: "responsible-user",
+      },
+      {
+        id: inProgressIssueId,
+        companyId,
+        title: "Fresh critical in progress card",
+        status: "in_progress",
+        priority: "critical",
+        assigneeAgentId: agentId,
+        responsibleUserId: "responsible-user",
+      },
+    ]);
+
+    const now = Date.now();
+    // Three age-up intervals: a whole class above any fresh run, whatever its
+    // priority.
+    const todoRunId = await insertQueuedRun({
+      companyId,
+      agentId,
+      issueId: todoIssueId,
+      createdAt: new Date(now - 3 * 60_000),
+    });
+    const inProgressRunId = await insertQueuedRun({
+      companyId,
+      agentId,
+      issueId: inProgressIssueId,
+      createdAt: new Date(now - 1_000),
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    const todoRunStarted = await waitForCondition(
+      async () => (await readRun(todoRunId))?.startedAt != null,
+    );
+    expect(todoRunStarted).toBe(true);
+    const inProgressRun = await readRun(inProgressRunId);
+    expect(inProgressRun?.startedAt ?? null).toBeNull();
+    expect(inProgressRun?.status).toBe("queued");
+  }, 40_000);
+
+  it("keeps in_progress work first against a critical todo card inside AGE_UP_MIN", async () => {
+    // The priority part of the composite score must stay strictly below the
+    // class rank: the unknown-priority fallback is rank 4, so the span is five,
+    // not four. With a span of four this in_progress run would tie with the
+    // critical todo card and lose on the priority tie-break.
+    const { companyId, agentId } = await seedAgent();
+    const todoIssueId = randomUUID();
+    const inProgressIssueId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: todoIssueId,
+        companyId,
+        title: "Critical todo card",
+        status: "todo",
+        priority: "critical",
+        assigneeAgentId: agentId,
+        responsibleUserId: "responsible-user",
+      },
+      {
+        id: inProgressIssueId,
+        companyId,
+        title: "In progress card without a known priority",
+        status: "in_progress",
+        priority: "onbekend",
+        assigneeAgentId: agentId,
+        responsibleUserId: "responsible-user",
+      },
+    ]);
+
+    const now = Date.now();
+    // Both well inside one age-up interval: no ageing may kick in.
+    const todoRunId = await insertQueuedRun({
+      companyId,
+      agentId,
+      issueId: todoIssueId,
+      createdAt: new Date(now - 20_000),
+    });
+    const inProgressRunId = await insertQueuedRun({
+      companyId,
+      agentId,
+      issueId: inProgressIssueId,
+      createdAt: new Date(now - 10_000),
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    const inProgressRunStarted = await waitForCondition(
+      async () => (await readRun(inProgressRunId))?.startedAt != null,
+    );
+    expect(inProgressRunStarted).toBe(true);
+    const todoRun = await readRun(todoRunId);
+    expect(todoRun?.startedAt ?? null).toBeNull();
+    expect(todoRun?.status).toBe("queued");
+  }, 40_000);
+
+  it("does not let a younger higher-priority run overtake a longer waiting run", async () => {
+    // Both runs are ready todo cards, so only waiting time differs. Once both
+    // have aged past a class the longer waiting run must win, even though it
+    // carries the lower priority: otherwise a steady supply of newer critical
+    // cards keeps starving the oldest row for ever.
+    const { companyId, agentId } = await seedAgent();
+    const oldIssueId = randomUUID();
+    const youngIssueId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: oldIssueId,
+        companyId,
+        title: "Low priority card waiting longest",
+        status: "todo",
+        priority: "low",
+        assigneeAgentId: agentId,
+        responsibleUserId: "responsible-user",
+      },
+      {
+        id: youngIssueId,
+        companyId,
+        title: "Medium priority card waiting shorter",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        responsibleUserId: "responsible-user",
+      },
+    ]);
+
+    const now = Date.now();
+    const oldRunId = await insertQueuedRun({
+      companyId,
+      agentId,
+      issueId: oldIssueId,
+      createdAt: new Date(now - 3 * 60_000),
+    });
+    const youngRunId = await insertQueuedRun({
+      companyId,
+      agentId,
+      issueId: youngIssueId,
+      createdAt: new Date(now - 2 * 60_000),
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    const oldRunStarted = await waitForCondition(
+      async () => (await readRun(oldRunId))?.startedAt != null,
+    );
+    expect(oldRunStarted).toBe(true);
+    const youngRun = await readRun(youngRunId);
+    expect(youngRun?.startedAt ?? null).toBeNull();
+    expect(youngRun?.status).toBe("queued");
+  }, 40_000);
 });
