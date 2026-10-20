@@ -1,0 +1,118 @@
+import type { DeferredWakeSweeper } from "./ports.js";
+import type { PostCommitEffect } from "./types.js";
+import { runReleaseDrain } from "./use-cases.js";
+
+/**
+ * A wake parked for at least this long is a missed drain, not a wake that is
+ * still waiting behind a live run: the release path promotes a parked wake as
+ * soon as its run finalizes, so two minutes is already several scheduler ticks.
+ */
+export const DEFERRED_WAKE_SWEEP_STALE_AFTER_MS = 2 * 60 * 1000;
+
+/** Bounded per pass: the backstop must never turn one tick into an unbounded scan. */
+export const DEFERRED_WAKE_SWEEP_LIMIT = 50;
+
+export type DeferredWakeSweepResult = {
+  /** Issues the store returned as candidates for this pass. */
+  scanned: number;
+  /** Issues whose drain ran (promoted or not). */
+  drained: number;
+  promoted: number;
+  cancelled: number;
+  skipped: number;
+  failed: number;
+  skipReasons: Record<string, number>;
+  promotedRunIds: string[];
+  cancelledWakeIds: string[];
+};
+
+function emptyResult(): DeferredWakeSweepResult {
+  return {
+    scanned: 0,
+    drained: 0,
+    promoted: 0,
+    cancelled: 0,
+    skipped: 0,
+    failed: 0,
+    skipReasons: {},
+    promotedRunIds: [],
+    cancelledWakeIds: [],
+  };
+}
+
+/**
+ * The periodic backstop for wakes that stayed parked on
+ * `deferred_issue_execution` because the release drain only fires from a run
+ * finalization or an explicit event.
+ *
+ * One pass reads the bounded candidate list from the store, and for each issue
+ * asks the store to open the issue lock and decide. Only a `drain` decision
+ * reaches `runReleaseDrain`, and it does so with `suppressImmediateRecovery`
+ * set: the backstop resumes parked wakes, it never queues a recovery run of
+ * its own. Issues that need no work cost one read and no provider session.
+ */
+export function createSweepDeferredIssueExecutionWakes(deps: {
+  sweeper: DeferredWakeSweeper;
+}) {
+  return async function sweepDeferredIssueExecutionWakes(input: {
+    now: Date;
+    staleAfterMs?: number;
+    limit?: number;
+    companyId?: string | null;
+  }): Promise<{
+    result: DeferredWakeSweepResult;
+    postCommitEffects: PostCommitEffect[];
+  }> {
+    const result = emptyResult();
+    const postCommitEffects: PostCommitEffect[] = [];
+    const candidates = await deps.sweeper.listStaleDeferredWakeIssues({
+      now: input.now,
+      staleAfterMs: input.staleAfterMs ?? DEFERRED_WAKE_SWEEP_STALE_AFTER_MS,
+      limit: input.limit ?? DEFERRED_WAKE_SWEEP_LIMIT,
+      ...(input.companyId ? { companyId: input.companyId } : {}),
+    });
+
+    for (const candidate of candidates) {
+      result.scanned += 1;
+      try {
+        const outcome = await deps.sweeper.drainIssue(
+          {
+            companyId: candidate.companyId,
+            issueId: candidate.issueId,
+            now: input.now,
+          },
+          // Same drain the release path uses; the sweeper only chooses the
+          // issue and the finishing run it replays.
+          (locked, ports) =>
+            runReleaseDrain(locked, ports, {
+              companyId: candidate.companyId,
+              runId: locked.run.id,
+              now: input.now,
+              suppressImmediateRecovery: true,
+            }),
+        );
+
+        if (outcome.action === "drained") {
+          result.drained += 1;
+          postCommitEffects.push(...outcome.postCommitEffects);
+          if (outcome.outcome.kind === "promoted") {
+            result.promoted += 1;
+            result.promotedRunIds.push(outcome.outcome.run.id);
+          }
+        } else if (outcome.action === "cancelled") {
+          result.cancelled += outcome.wakeIds.length;
+          result.cancelledWakeIds.push(...outcome.wakeIds);
+        } else if (outcome.action === "skipped") {
+          result.skipped += 1;
+          result.skipReasons[outcome.reason] =
+            (result.skipReasons[outcome.reason] ?? 0) + 1;
+        }
+      } catch {
+        // One issue must never abort the pass: the next tick retries it.
+        result.failed += 1;
+      }
+    }
+
+    return { result, postCommitEffects };
+  };
+}

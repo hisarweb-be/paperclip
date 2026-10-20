@@ -3,7 +3,7 @@ import { isCompletedOnboardingHandoffWake } from "../../../services/chat-complet
 import { instanceSettingsService } from "../../../services/instance-settings.js";
 import { currentConversationCommentCondition } from "../../../services/agent-conversations.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
-import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { extractIssueReferenceIdentifiers } from "@paperclipai/shared";
 import {
@@ -43,6 +43,11 @@ import { extractWakeCommentIds } from "../../run-dispatch/index.js";
 import { hasInteractionContinuationWakeContext } from "../domain/context.js";
 import { decidePreDrain, type PreDrainFacts } from "../domain/policy.js";
 import {
+  decideDeferredWakeSweep,
+  isOperatorCancelledWakeSource,
+  type DeferredWakeSweepWake,
+} from "../domain/deferred-wake-sweep.js";
+import {
   EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
   isConfigurationIncompleteFailedRun,
   isWorkspaceValidationFailedRun,
@@ -52,6 +57,7 @@ import {
 import { requireTransactionScopeTx, TransactionScope } from "../application/ports.js";
 import type {
   DeferredWakeCandidate,
+  DeferredWakeSweeper,
   InvokableAgentSnapshot,
   IssueLockWriter,
   IssueSnapshot,
@@ -1197,6 +1203,249 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
         const locked: LockedIssueExecution = { primaryIssue: toIssueSnapshot(issueRow), run: runSnapshot, recoveryOnly };
         const result = await fn(locked, { host: buildHost(tx, deps), transaction: buildTransaction(tx, deps, db, run) });
         return { ...result, run: runSnapshot };
+      });
+    },
+  };
+}
+
+/** Wakes that are already being delivered for the same issue. */
+const IN_FLIGHT_WAKE_STATUSES = ["queued", "claimed"] as const;
+
+/** Statuses a finishing run can hold when the sweep replays its release. */
+const TERMINAL_HEARTBEAT_RUN_STATUSES = [
+  "succeeded",
+  "failed",
+  "timed_out",
+  "cancelled",
+  "interrupted",
+] as const;
+
+/**
+ * Periodic backstop for wakes parked on `deferred_issue_execution`.
+ *
+ * The store never promotes a wake on its own: a `drain` decision hands the
+ * locked issue and the latest terminal run back to the caller, which runs the
+ * regular `runReleaseDrain` in this same transaction. That keeps one
+ * promotion implementation, one compare-and-set, and the same comment-liveness
+ * rules as the release path.
+ *
+ * The `for update` on the issue row is what makes a concurrent release safe:
+ * the drain and the sweeper serialize on it, and a wake that leaves
+ * `deferred_issue_execution` in that window is simply not behind the lock
+ * anymore, so the next pass sees nothing to do.
+ */
+export function createPostgresDeferredWakeSweeper(
+  db: Db,
+  deps: WakeQueuePostgresAdapterDeps,
+): DeferredWakeSweeper {
+  const issueIdInPayload = () => sql`${agentWakeupRequests.payload} ->> 'issueId'`;
+  const runIssueIdMatch = (issueId: string) =>
+    or(
+      eq(heartbeatRuns.nativeIssueId, issueId),
+      sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+    );
+
+  return {
+    async listStaleDeferredWakeIssues(input) {
+      const issueIdExpr = issueIdInPayload();
+      const oldestRequestedAt = sql`min(${agentWakeupRequests.requestedAt})`;
+      const filters = [
+        eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS),
+        isNotNull(issueIdInPayload()),
+        lte(
+          agentWakeupRequests.requestedAt,
+          new Date(input.now.getTime() - input.staleAfterMs),
+        ),
+      ];
+      if (input.companyId) filters.push(eq(agentWakeupRequests.companyId, input.companyId));
+
+      const rows = await db
+        .select({
+          companyId: agentWakeupRequests.companyId,
+          issueId: issueIdExpr.as("issue_id"),
+          wakeCount: sql<number>`count(*)::int`.as("wake_count"),
+          oldestRequestedAt: oldestRequestedAt.as("oldest_requested_at"),
+        })
+        .from(agentWakeupRequests)
+        .where(and(...filters))
+        .groupBy(agentWakeupRequests.companyId, issueIdExpr)
+        .orderBy(asc(oldestRequestedAt))
+        .limit(input.limit);
+
+      return rows.map((row) => ({
+        companyId: row.companyId,
+        issueId: row.issueId,
+        wakeCount: row.wakeCount,
+        oldestRequestedAt: new Date(row.oldestRequestedAt),
+      }));
+    },
+
+    async drainIssue(input, fn) {
+      return db.transaction(async (rawTx) => {
+        const tx = rawTx as unknown as Db;
+        const [issueRow] = await tx
+          .select()
+          .from(issues)
+          .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)))
+          .for("update");
+        if (!issueRow) return { action: "missing" };
+
+        const wakeRows = await tx
+          .select()
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, input.companyId),
+              eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS),
+              sql`${agentWakeupRequests.payload} ->> 'issueId' = ${input.issueId}`,
+            ),
+          )
+          .orderBy(asc(agentWakeupRequests.requestedAt), asc(agentWakeupRequests.id));
+
+        const candidates = wakeRows.map(toDeferredWakeCandidate);
+        const deferredWakes: DeferredWakeSweepWake[] = candidates.map((candidate, index) => ({
+          id: candidate.id,
+          requestedAt: wakeRows[index]!.requestedAt,
+          // A human comment, an explicit reopen, or an assignee resume intent
+          // may reopen a completed card. Those wakes belong to the next real
+          // event, never to a background pass.
+          canReopenTerminalIssue:
+            candidate.requestedByActorType === "user" ||
+            candidate.wakeReason === "issue_reopened_via_comment" ||
+            (candidate.deferredContextSeed.resumeIntent === true &&
+              candidate.queuedCommentIds.length > 0),
+        }));
+
+        const [liveRunRow] = candidates.length === 0 ? [] : await tx
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, input.companyId),
+              inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+              runIssueIdMatch(input.issueId),
+            ),
+          )
+          .limit(1);
+
+        const [liveLockRow] = issueRow.executionRunId && candidates.length > 0 ? await tx
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.id, issueRow.executionRunId),
+              eq(heartbeatRuns.companyId, input.companyId),
+              inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+            ),
+          )
+          .limit(1) : [];
+
+        const [latestRunRow] = candidates.length === 0 ? [] : await tx
+          .select()
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, input.companyId),
+              inArray(heartbeatRuns.status, [...TERMINAL_HEARTBEAT_RUN_STATUSES]),
+              runIssueIdMatch(input.issueId),
+            ),
+          )
+          .orderBy(desc(heartbeatRuns.finishedAt), desc(heartbeatRuns.createdAt))
+          .limit(1);
+
+        const [inFlightWakeRow] = candidates.length === 0 ? [] : await tx
+          .select({ id: agentWakeupRequests.id })
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, input.companyId),
+              inArray(agentWakeupRequests.status, [...IN_FLIGHT_WAKE_STATUSES]),
+              sql`${agentWakeupRequests.payload} ->> 'issueId' = ${input.issueId}`,
+            ),
+          )
+          .limit(1);
+
+        const dependencyBlocked = candidates.length === 0 ? false : Boolean(await tx
+          .select({ issueId: issueRelations.issueId })
+          .from(issueRelations)
+          .innerJoin(issues, eq(issueRelations.issueId, issues.id))
+          .where(
+            and(
+              eq(issueRelations.companyId, input.companyId),
+              eq(issueRelations.relatedIssueId, input.issueId),
+              eq(issueRelations.type, "blocks"),
+              eq(issues.companyId, input.companyId),
+              notInArray(issues.status, ["done", "cancelled"]),
+              isNull(issues.hiddenAt),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null));
+
+        const decision = decideDeferredWakeSweep({
+          issueStatus: issueRow.status,
+          liveRunId: liveRunRow?.id ?? null,
+          liveLockRunId: liveLockRow?.id ?? null,
+          latestRun: latestRunRow
+            ? {
+                id: latestRunRow.id,
+                status: latestRunRow.status,
+                finishedAt: latestRunRow.finishedAt,
+              }
+            : null,
+          latestRunOperatorCancelled: latestRunRow
+            ? isOperatorCancelledWakeSource({
+                status: latestRunRow.status,
+                errorCode: latestRunRow.errorCode,
+                resultJson: latestRunRow.resultJson,
+              })
+            : false,
+          inFlightWakeCount: inFlightWakeRow ? 1 : 0,
+          dependencyBlocked,
+          deferredWakes,
+        });
+
+        if (decision.kind === "skip") return { action: "skipped", reason: decision.reason };
+
+        if (decision.kind === "cancel") {
+          const cancelledWakeIds: string[] = [];
+          for (const wakeId of decision.wakeIds) {
+            const rows = await tx
+              .update(agentWakeupRequests)
+              .set({
+                status: "cancelled",
+                finishedAt: input.now,
+                error: decision.reason,
+                updatedAt: input.now,
+              })
+              .where(
+                and(
+                  eq(agentWakeupRequests.id, wakeId),
+                  eq(agentWakeupRequests.companyId, input.companyId),
+                  eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS),
+                ),
+              )
+              .returning({ id: agentWakeupRequests.id });
+            if (rows.length > 0) cancelledWakeIds.push(wakeId);
+          }
+          return { action: "cancelled", wakeIds: cancelledWakeIds, reason: decision.reason };
+        }
+
+        // decideDeferredWakeSweep only reaches "drain" with a finishing run.
+        if (!latestRunRow) return { action: "skipped", reason: "no_finishing_run" };
+        const locked: LockedIssueExecution = {
+          primaryIssue: toIssueSnapshot(issueRow),
+          run: toRunSnapshot(latestRunRow),
+        };
+        const result = await fn(locked, {
+          host: buildHost(tx, deps),
+          transaction: buildTransaction(tx, deps, db, latestRunRow),
+        });
+        return {
+          action: "drained",
+          outcome: result.outcome,
+          postCommitEffects: result.postCommitEffects,
+        };
       });
     },
   };
