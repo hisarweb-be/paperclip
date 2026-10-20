@@ -17048,6 +17048,40 @@ export function heartbeatService(
     }
   }
 
+  /**
+   * Ageing for the queued-run ordering in startNextQueuedRunForAgent.
+   *
+   * Without ageing, a `todo`-issue wake (rank 1) is passed forever by every
+   * newer `in_progress`-issue wake (rank 0) from the same agent: the class
+   * rank dominates and nothing ever promotes an older row. A queued run that
+   * has waited QUEUED_RUN_AGE_UP_MIN_DEFAULT minutes climbs one class, so it
+   * outranks fresh rank-0 work after three intervals.
+   *
+   * Dependency-blocked runs (rank 3) are never promoted: their blocker, not
+   * their age, decides when they may start. Ranks never go below 0, and
+   * priority plus createdAt still break ties inside an aged class.
+   */
+  const QUEUED_RUN_AGE_UP_MIN_DEFAULT = 30;
+
+  function queuedRunAgeUpMinutes() {
+    const raw = process.env.PAPERCLIP_QUEUE_AGE_UP_MIN;
+    const parsed = raw === undefined ? Number.NaN : Number.parseInt(raw, 10);
+    return Number.isFinite(parsed) && parsed > 0
+      ? parsed
+      : QUEUED_RUN_AGE_UP_MIN_DEFAULT;
+  }
+
+  function agedQueuedRunRank(
+    baseRank: number,
+    createdAt: Date,
+    now: number,
+    ageUpMinutes: number,
+  ) {
+    if (baseRank >= 3) return baseRank;
+    const waitedMinutes = Math.max(0, now - createdAt.getTime()) / 60_000;
+    return Math.max(0, baseRank - Math.floor(waitedMinutes / ageUpMinutes));
+  }
+
   async function listQueuedRunDependencyReadiness(
     companyId: string,
     queuedRuns: Array<typeof heartbeatRuns.$inferSelect>,
@@ -20099,6 +20133,10 @@ export function heartbeatService(
         );
       const issueById = new Map(issueRows.map((row) => [row.id, row]));
       const companyAgents = await listCompanyAgentOrgRows(agent.companyId);
+      // One clock and one age-up interval for the whole sort, so the comparator
+      // stays consistent while it runs.
+      const queuedRunSortNow = Date.now();
+      const queuedRunAgeUpMin = queuedRunAgeUpMinutes();
       const prioritizedRuns = [...queuedRuns].sort((left, right) => {
         const leftIssueId = readNonEmptyString(
           parseObject(left.contextSnapshot).issueId,
@@ -20134,7 +20172,19 @@ export function heartbeatService(
               : 1
             : 3
           : 2;
-        if (leftRank !== rightRank) return leftRank - rightRank;
+        const leftAgedRank = agedQueuedRunRank(
+          leftRank,
+          left.createdAt,
+          queuedRunSortNow,
+          queuedRunAgeUpMin,
+        );
+        const rightAgedRank = agedQueuedRunRank(
+          rightRank,
+          right.createdAt,
+          queuedRunSortNow,
+          queuedRunAgeUpMin,
+        );
+        if (leftAgedRank !== rightAgedRank) return leftAgedRank - rightAgedRank;
         const leftPriorityRank = issueRunPriorityRank(leftIssue?.priority);
         const rightPriorityRank = issueRunPriorityRank(rightIssue?.priority);
         if (leftPriorityRank !== rightPriorityRank)
