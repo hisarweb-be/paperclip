@@ -216,10 +216,17 @@ function registerRouteMocks() {
     ),
   }));
 
-  vi.doMock("../services/reassignment-handover.js", () => ({
-    REASSIGNMENT_HANDOVER_BACKSTOP_MS: 10 * 60_000,
-    scheduleReassignmentHandoverBackstop: mockScheduleReassignmentHandoverBackstop,
-  }));
+  // Spread the actual module so route imports added later (disposition,
+  // hold statuses) stay defined here; only the timer call is mocked.
+  vi.doMock("../services/reassignment-handover.js", async () => {
+    const actual = await vi.importActual<
+      typeof import("../services/reassignment-handover.js")
+    >("../services/reassignment-handover.js");
+    return {
+      ...actual,
+      scheduleReassignmentHandoverBackstop: mockScheduleReassignmentHandoverBackstop,
+    };
+  });
 
   vi.doMock("../services/runner-goals.js", () => ({
     runnerGoalService: () => mockRunnerGoalService,
