@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   REASSIGNMENT_HANDOVER_BACKSTOP_MS,
   enforceReassignmentHandoverBackstop,
+  reassignmentRunDisposition,
   scheduleReassignmentHandoverBackstop,
   type ReassignmentHandoverBackstopDeps,
 } from "./reassignment-handover.js";
@@ -113,5 +114,36 @@ describe("reassignment handover backstop", () => {
 
     await vi.advanceTimersByTimeAsync(REASSIGNMENT_HANDOVER_BACKSTOP_MS);
     expect(getRun).not.toHaveBeenCalled();
+  });
+});
+
+describe("reassignmentRunDisposition", () => {
+  it("hands over a run that already started", () => {
+    expect(
+      reassignmentRunDisposition({ status: "running", startedAt: new Date("2026-10-20T03:30:00Z") }),
+    ).toBe("hand_over");
+  });
+
+  it("hands over a queued run that already started once", () => {
+    expect(
+      reassignmentRunDisposition({ status: "queued", startedAt: new Date("2026-10-20T03:30:00Z") }),
+    ).toBe("hand_over");
+  });
+
+  it("cancels a run that never started", () => {
+    expect(reassignmentRunDisposition({ status: "queued", startedAt: null })).toBe(
+      "cancel_never_started",
+    );
+    expect(reassignmentRunDisposition({ status: "scheduled_retry", startedAt: null })).toBe(
+      "cancel_never_started",
+    );
+  });
+
+  it("keeps a run without a start record when its status is not a wait state", () => {
+    // Only queued/scheduled_retry rows are known to hold no work (startedAt is
+    // written when a run actually starts). Anything else without a startedAt is
+    // unproven, so hand it over instead of throwing work away.
+    expect(reassignmentRunDisposition({ status: "running" })).toBe("hand_over");
+    expect(reassignmentRunDisposition({ status: "running", startedAt: null })).toBe("hand_over");
   });
 });

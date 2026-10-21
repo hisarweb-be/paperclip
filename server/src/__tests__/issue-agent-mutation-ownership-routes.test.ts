@@ -1870,7 +1870,10 @@ describe("agent issue mutation checkout ownership", () => {
     },
   );
 
-  it("hands a live run over instead of cancelling it when the runner goal stops", async () => {
+  it("hands a started run over when the adapter has no runner goal to stop", async () => {
+    // Production reality for an all-`claude_local` company (HIS-3599): the
+    // runner-goal projection has no goal and no capability, so the handover
+    // must not wait for a goal stop that can never happen.
     const issue = makeIssue({
       status: "in_progress",
       assigneeAgentId: ownerAgentId,
@@ -1889,6 +1892,55 @@ describe("agent issue mutation checkout ownership", () => {
       status: "running",
       agentId: ownerAgentId,
       companyId,
+      startedAt: new Date("2026-10-20T03:30:00.000Z"),
+    });
+    mockRunnerGoalService.projection.mockResolvedValue({
+      goal: null,
+      pendingAction: null,
+      capability: {
+        actions: [],
+        availability: "unsupported",
+        reasonCode: "persistent_session_goal_extension_required",
+      },
+      revision: 0,
+    });
+
+    const res = await request(await createApp(boardActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ assigneeAgentId: peerAgentId });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockRunnerGoalService.act).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+    expect(mockScheduleReassignmentHandoverBackstop).toHaveBeenCalledWith(
+      expect.objectContaining({
+        getRun: expect.any(Function),
+        cancelRun: expect.any(Function),
+      }),
+      { runId: ownerRunId, issueId },
+    );
+  });
+
+  it("still stops a pausable runner goal before handing a started run over", async () => {
+    const issue = makeIssue({
+      status: "in_progress",
+      assigneeAgentId: ownerAgentId,
+      executionRunId: ownerRunId,
+    });
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({ ...issue, ...patch }),
+    );
+    mockAgentService.resolveByReference.mockResolvedValue({
+      ambiguous: false,
+      agent: makeAgent(peerAgentId),
+    });
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: ownerRunId,
+      status: "running",
+      agentId: ownerAgentId,
+      companyId,
+      startedAt: new Date("2026-10-20T03:30:00.000Z"),
     });
     const capability = { actions: ["pause", "clear"] };
     mockRunnerGoalService.projection
@@ -1926,7 +1978,7 @@ describe("agent issue mutation checkout ownership", () => {
     );
   });
 
-  it("still cancels the live run when no runner goal can be stopped", async () => {
+  it("cancels a run that never started instead of handing it over", async () => {
     const issue = makeIssue({
       status: "in_progress",
       assigneeAgentId: ownerAgentId,
@@ -1942,9 +1994,10 @@ describe("agent issue mutation checkout ownership", () => {
     });
     mockHeartbeatService.getRun.mockResolvedValue({
       id: ownerRunId,
-      status: "running",
+      status: "queued",
       agentId: ownerAgentId,
       companyId,
+      startedAt: null,
     });
     mockRunnerGoalService.projection.mockResolvedValue(null);
     mockHeartbeatService.cancelRun.mockResolvedValue({
@@ -1952,6 +2005,7 @@ describe("agent issue mutation checkout ownership", () => {
       status: "cancelled",
       agentId: ownerAgentId,
       companyId,
+      startedAt: null,
     });
 
     const res = await request(await createApp(boardActor()))

@@ -1,21 +1,31 @@
 /**
- * HIS-3477: a reassignment hands the active run over instead of killing it.
+ * HIS-3477: a reassignment hands a started run over instead of killing it.
  *
- * The route stops the runner goal, so the old run finishes its current turn and
- * the heartbeat continuation gate refuses the next turn with `issue_reassigned`.
- * If the run is still active ten minutes later, this backstop cancels it anyway
- * so a stuck handover cannot hold the issue forever. `resultJson.forced = true`
- * separates these cancellations from plain reassignment stops in the
- * remeasurement.
+ * The handover does not depend on a runner goal: for most adapters
+ * (`claude_local`) there is no goal to pause at all. A run that has started
+ * (`startedAt != null`) finishes its current turn and the heartbeat
+ * continuation gate refuses the next turn with `issue_reassigned`. Only runs
+ * that never started (`queued`/`scheduled_retry`) are cancelled up front; they
+ * cost no work and would otherwise hold the execution lock.
+ *
+ * If a handed-over run is still active ten minutes later, the backstop cancels
+ * it anyway so a stuck handover cannot hold the issue forever.
+ * `resultJson.forced = true` separates these cancellations from plain
+ * reassignment stops in the remeasurement.
  */
 export const REASSIGNMENT_HANDOVER_BACKSTOP_MS = 10 * 60_000;
 
-/** Runs that can still be cancelled by the backstop. */
-const BACKSTOP_CANCELLABLE_RUN_STATUSES = new Set([
+/** Runs the reassignment branch has to resolve: they hold or claim the issue. */
+export const REASSIGNMENT_HOLD_RUN_STATUSES = [
   "running",
   "queued",
   "scheduled_retry",
-]);
+] as const;
+
+/** Runs that can still be cancelled by the backstop. */
+const BACKSTOP_CANCELLABLE_RUN_STATUSES = new Set<string>(
+  REASSIGNMENT_HOLD_RUN_STATUSES,
+);
 
 type BackstopRun = { id: string; status: string };
 
@@ -32,6 +42,28 @@ export type ReassignmentHandoverBackstopDeps = {
     },
   ) => Promise<BackstopRun | null>;
 };
+
+export type ReassignmentRunDisposition = "hand_over" | "cancel_never_started";
+
+/**
+ * What a reassignment does with the run that holds the issue.
+ *
+ * The line is whether the run ever started, not whether a runner goal could be
+ * stopped: `startedAt != null` means real work is in flight, so the run is
+ * handed over and the continuation gate ends it. A run that never started
+ * (`queued`/`scheduled_retry` without `startedAt`) only holds the execution
+ * lock and is cancelled up front. A `running` row without `startedAt` is
+ * anomalous; it is handed over and left to the backstop rather than killed.
+ */
+export function reassignmentRunDisposition(run: {
+  status: string;
+  startedAt?: Date | string | null;
+}): ReassignmentRunDisposition {
+  if (run.startedAt != null) return "hand_over";
+  return run.status === "queued" || run.status === "scheduled_retry"
+    ? "cancel_never_started"
+    : "hand_over";
+}
 
 export type ReassignmentHandoverBackstopOutcome =
   | "run_missing"
