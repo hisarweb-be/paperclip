@@ -106,6 +106,13 @@ export function createSweepDeferredIssueExecutionWakes(deps: {
           result.skipped += 1;
           result.skipReasons[outcome.reason] =
             (result.skipReasons[outcome.reason] ?? 0) + 1;
+        } else {
+          // The issue row was gone by the time the sweep took its lock
+          // (deleted, or moved to another company). Nothing is left to resume,
+          // but it is still a candidate this pass read, so it is counted:
+          // otherwise the pass totals do not add up to `scanned`.
+          result.skipped += 1;
+          result.skipReasons.issue_missing = (result.skipReasons.issue_missing ?? 0) + 1;
         }
       } catch {
         // One issue must never abort the pass: the next tick retries it.
