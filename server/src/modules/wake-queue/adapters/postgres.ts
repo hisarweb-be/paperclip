@@ -1238,7 +1238,7 @@ export function createPostgresDeferredWakeSweeper(
   db: Db,
   deps: WakeQueuePostgresAdapterDeps,
 ): DeferredWakeSweeper {
-  const issueIdInPayload = () => sql`${agentWakeupRequests.payload} ->> 'issueId'`;
+  const issueIdInPayload = () => sql<string>`${agentWakeupRequests.payload} ->> 'issueId'`;
   const runIssueIdMatch = (issueId: string) =>
     or(
       eq(heartbeatRuns.nativeIssueId, issueId),
@@ -1248,7 +1248,7 @@ export function createPostgresDeferredWakeSweeper(
   return {
     async listStaleDeferredWakeIssues(input) {
       const issueIdExpr = issueIdInPayload();
-      const oldestRequestedAt = sql`min(${agentWakeupRequests.requestedAt})`;
+      const oldestRequestedAt = sql<Date | string>`min(${agentWakeupRequests.requestedAt})`;
       const filters = [
         eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS),
         isNotNull(issueIdInPayload()),
@@ -1276,7 +1276,13 @@ export function createPostgresDeferredWakeSweeper(
         companyId: row.companyId,
         issueId: row.issueId,
         wakeCount: row.wakeCount,
-        oldestRequestedAt: new Date(row.oldestRequestedAt),
+        // node-pg parses `timestamptz` into a `Date`, but the aggregate goes
+        // through a raw SQL fragment, so accept both shapes instead of trusting
+        // the driver's parser here.
+        oldestRequestedAt:
+          row.oldestRequestedAt instanceof Date
+            ? row.oldestRequestedAt
+            : new Date(row.oldestRequestedAt),
       }));
     },
 
