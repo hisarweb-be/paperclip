@@ -71,6 +71,13 @@ export type PreDrainFacts = {
   issueStatus: string;
   hasAssigneeUser: boolean;
   assigneeAgentMatchesRunAgent: boolean;
+  /**
+   * True when the run was cancelled without ever being started. Such a run
+   * never reached a provider session, so it has nothing to reconcile and must
+   * not be swallowed by the legacy-reconciliation check below — that is the
+   * shape of a queued holder whose lock is released on reassignment.
+   */
+  cancelledBeforeStart: boolean;
   legacyExecutionNeedsReconciliation: boolean;
   /** True when the finishing run is cancelled and its stored result carries an acknowledged execution cancellation. */
   executionCancellationAcknowledged: boolean;
@@ -84,12 +91,13 @@ export type PreDrainDecision =
 /**
  * Decides the pre-drain release outcome for one lock acquisition, before the
  * caller runs its own lock function. Check order is fixed: the issue-row
- * check runs first, then the blocked-notice check, then legacy-execution
- * reconciliation, then acknowledged execution cancellation. Each check
- * returns as soon as it applies, so an earlier true condition can hide a
- * later one when both hold at the same time. "proceed" means none of the
- * four checks applied; the caller then runs its own write-carrying check
- * and, if that also clears, calls its lock function.
+ * check runs first, then the blocked-notice check, then the
+ * cancelled-before-start check, then legacy-execution reconciliation, then
+ * acknowledged execution cancellation. Each check returns as soon as it
+ * applies, so an earlier true condition can hide a later one when both hold
+ * at the same time. "proceed" means none of the five checks applied; the
+ * caller then runs its own write-carrying check and, if that also clears,
+ * calls its lock function.
  */
 export function decidePreDrain(facts: PreDrainFacts): PreDrainDecision {
   if (!facts.issueRowPresent || !facts.executionRunIdMatchesRun) {
@@ -106,6 +114,18 @@ export function decidePreDrain(facts: PreDrainFacts): PreDrainDecision {
       kind: "blocked",
       noticeKind: facts.isConfigurationIncompleteFailedRun ? "configuration_incomplete" : "workspace_validation",
     };
+  }
+
+  // A run cancelled before it ever started never reached a provider session,
+  // so there is nothing for legacy reconciliation to replay. Without this
+  // check the legacy rule below swallows the release and any wake parked
+  // behind the run's lock stays in `deferred_issue_execution` forever — the
+  // shape of a queued holder cancelled during reassignment. An acknowledged
+  // cancellation is excluded: that run's stop was confirmed by a provider
+  // session, so the release must stay a release and must not restart the
+  // outgoing owner.
+  if (facts.cancelledBeforeStart && !facts.executionCancellationAcknowledged) {
+    return { kind: "proceed" };
   }
 
   if (facts.legacyExecutionNeedsReconciliation) {

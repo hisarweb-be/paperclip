@@ -1104,6 +1104,9 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           issueStatus: issueRow?.status ?? "",
           hasAssigneeUser: Boolean(issueRow?.assigneeUserId),
           assigneeAgentMatchesRunAgent: issueRow?.assigneeAgentId === run.agentId,
+          // A queued holder cancelled before dispatch (e.g. the reassignment
+          // lock release) has no provider session to reconcile.
+          cancelledBeforeStart: run.status === "cancelled" && !run.startedAt,
           legacyExecutionNeedsReconciliation: legacyExecutionNeedsReconciliation(run),
           // An operator stop never promotes old queued work by itself. The
           // next explicit wake adopts those messages atomically when it
