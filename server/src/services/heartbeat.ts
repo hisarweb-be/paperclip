@@ -27397,6 +27397,11 @@ export function heartbeatService(
       const agentNameKey = normalizeAgentNameKey(agent.name);
 
       const cancelledRunsToEmit: (typeof heartbeatRuns.$inferSelect)[] = [];
+      // A queued holder cancelled for reassignment never finalizes, so the
+      // release drain that normally fires on run finalization never runs for
+      // it. Wake-queue activation is collected here and released after the
+      // transaction commits.
+      const lockReleasedRunsToDrain: (typeof heartbeatRuns.$inferSelect)[] = [];
 
       const outcome = await db
         .transaction(async (tx) => {
@@ -28085,6 +28090,7 @@ export function heartbeatService(
               .returning();
             if (cancelled.length > 0) {
               cancelledRunsToEmit.push(cancelled[0]);
+              lockReleasedRunsToDrain.push(cancelled[0]);
               if (activeExecutionRun.wakeupRequestId) {
                 await tx
                   .update(agentWakeupRequests)
@@ -28787,6 +28793,25 @@ export function heartbeatService(
       // lookup must not delay them.
       for (const cancelledRun of cancelledRunsToEmit) {
         void emitAgentTaskRun(db, cancelledRun);
+      }
+
+      // A queued holder cancelled for reassignment is terminal without ever
+      // running, so no finalization path calls the release drain and any wake
+      // parked in `deferred_issue_execution` behind its lock would stay parked
+      // forever. Release the issue execution lock for it now that the
+      // transaction committed. The drain resolves the issue through the run's
+      // `contextSnapshot.issueId`, promotes at most one deferred wake, and is
+      // best-effort: a failure here must not fail the enqueue that triggered
+      // the reassignment.
+      for (const lockReleasedRun of lockReleasedRunsToDrain) {
+        await releaseIssueExecutionAndPromote(lockReleasedRun, {
+          suppressImmediateRecovery: true,
+        }).catch((err) => {
+          logger.warn(
+            { err, runId: lockReleasedRun.id },
+            "failed to promote deferred wakes after reassignment lock release",
+          );
+        });
       }
 
       if (outcome.kind === "durable") {
