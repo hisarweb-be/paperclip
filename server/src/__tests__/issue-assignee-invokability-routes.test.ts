@@ -14,6 +14,7 @@ const agentStatusById: Record<string, string> = {
 };
 
 const mockIssueService = vi.hoisted(() => ({
+  listBlockerAttention: vi.fn(async () => new Map()),
   getById: vi.fn(),
   findOpenAncestorCreatedByAgent: vi.fn(),
   update: vi.fn(),

@@ -3380,9 +3380,19 @@ type IssueBlockerAttentionInputNode = Pick<
   | "assigneeUserId"
 > & { executionRunId?: string | null };
 
+type IssueBlockerAttentionEdgeKind = "blocks" | "child";
+
 type IssueBlockerAttentionEdge = {
   issueId: string;
   blockerIssueId: string;
+  /**
+   * "blocks" is a first-class dependency (issue_relations.type = 'blocks');
+   * "child" is the decomposition edge a blocked parent has to its open
+   * sub-tasks. Both keep a parent waiting, but only a first-class dependency
+   * is a blocker in the graph the board sees, so the two are not
+   * interchangeable when a path is named.
+   */
+  kind: IssueBlockerAttentionEdgeKind;
 };
 type IssueBlockerAttentionQueryRow = IssueBlockerAttentionNode & {
   issueId: string | null;
@@ -3568,10 +3578,16 @@ function appendBlockerAttentionEdges(
 ) {
   for (const row of rows) {
     const existing = edgesByIssueId.get(row.issueId) ?? [];
-    if (!existing.some((edge) => edge.blockerIssueId === row.blockerIssueId)) {
-      existing.push(row);
-      edgesByIssueId.set(row.issueId, existing);
+    const duplicate = existing.find(
+      (edge) => edge.blockerIssueId === row.blockerIssueId,
+    );
+    if (duplicate) {
+      // An explicit relation wins over the decomposition edge for the same pair.
+      if (row.kind === "blocks") duplicate.kind = "blocks";
+      continue;
     }
+    existing.push(row);
+    edgesByIssueId.set(row.issueId, existing);
   }
 }
 
@@ -3809,6 +3825,7 @@ async function listIssueBlockerAttentionMap(
           .map((row) => ({
             issueId: row.issueId,
             blockerIssueId: row.blockerIssueId,
+            kind: "blocks" as const,
           })),
         ...childRows
           .filter(
@@ -3818,6 +3835,7 @@ async function listIssueBlockerAttentionMap(
           .map((row) => ({
             issueId: row.issueId,
             blockerIssueId: row.blockerIssueId,
+            kind: "child" as const,
           })),
       ]);
 
@@ -4193,62 +4211,81 @@ async function listIssueBlockerAttentionMap(
     if (downstream.length > 0) {
       const nextSeen = new Set(seen);
       nextSeen.add(nodeId);
-      const classified = downstream.map((edge) =>
-        classifyPath(edge.blockerIssueId, nextSeen),
-      );
+      const classified = downstream.map((edge) => ({
+        edge,
+        result: classifyPath(edge.blockerIssueId, nextSeen),
+      }));
       const stalledChild = classified.find(
-        (result) => result.stalled || result.sampleStalledBlockerIdentifier,
+        (entry) =>
+          entry.result.stalled || entry.result.sampleStalledBlockerIdentifier,
       );
-      const sampleStalled =
-        stalledChild?.sampleStalledBlockerIdentifier ?? null;
-      const hardAttention =
+      const sampleStalled = stalledChild?.result.sampleStalledBlockerIdentifier ?? null;
+      const hardAttentionEntry =
         classified.find(
-          (result) =>
-            !result.covered && !result.stalled && result.terminalBlockerIssueId,
-        ) ?? classified.find((result) => !result.covered && !result.stalled);
-      if (hardAttention) {
+          (entry) =>
+            !entry.result.covered &&
+            !entry.result.stalled &&
+            entry.result.terminalBlockerIssueId,
+        ) ??
+        classified.find((entry) => !entry.result.covered && !entry.result.stalled);
+      if (hardAttentionEntry) {
+        // A sub-task is not a blocker of this card. When the attention sits in
+        // this node's own decomposition tree, name this node: it is the card
+        // the board can act on, not an arbitrary descendant several levels
+        // down that never appears in the blocker graph.
+        const namedInsideChildTree = hardAttentionEntry.edge.kind === "child";
         return {
           covered: false,
           stalled: false,
-          sampleBlockerIdentifier: hardAttention.sampleBlockerIdentifier,
+          sampleBlockerIdentifier: namedInsideChildTree
+            ? nodeSample
+            : hardAttentionEntry.result.sampleBlockerIdentifier,
           sampleStalledBlockerIdentifier: sampleStalled,
-          terminalBlockerIssueId: hardAttention.terminalBlockerIssueId ?? null,
+          terminalBlockerIssueId: namedInsideChildTree
+            ? node.id
+            : (hardAttentionEntry.result.terminalBlockerIssueId ?? null),
         };
       }
-      const stalledEntry = classified.find((result) => result.stalled);
+      const stalledEntry = classified.find((entry) => entry.result.stalled);
       if (stalledEntry) {
         return {
           covered: false,
           stalled: true,
-          sampleBlockerIdentifier: stalledEntry.sampleBlockerIdentifier,
+          sampleBlockerIdentifier: stalledEntry.result.sampleBlockerIdentifier,
           sampleStalledBlockerIdentifier: sampleStalled,
-          terminalBlockerIssueId: stalledEntry.terminalBlockerIssueId ?? null,
+          terminalBlockerIssueId:
+            stalledEntry.result.terminalBlockerIssueId ?? null,
         };
       }
       return {
         covered: true,
         stalled: false,
         sampleBlockerIdentifier:
-          classified[0]?.sampleBlockerIdentifier ?? nodeSample,
+          downstream[0]?.kind === "child"
+            ? nodeSample
+            : (classified[0]?.result.sampleBlockerIdentifier ?? nodeSample),
         sampleStalledBlockerIdentifier: null,
       };
     }
 
-    if (node.assigneeAgentId) {
-      const assignee = agentsById.get(node.assigneeAgentId);
-      if (
-        !assignee ||
-        assignee.companyId !== companyId ||
-        !BLOCKER_ATTENTION_INVOKABLE_AGENT_STATUSES.has(assignee.status)
-      ) {
-        return {
-          covered: false,
-          stalled: false,
-          sampleBlockerIdentifier: nodeSample,
-          sampleStalledBlockerIdentifier: null,
-          terminalBlockerIssueId: node.id,
-        };
-      }
+    const assignee = node.assigneeAgentId
+      ? agentsById.get(node.assigneeAgentId)
+      : null;
+    const assigneeCanAct = Boolean(
+      assignee &&
+        assignee.companyId === companyId &&
+        BLOCKER_ATTENTION_INVOKABLE_AGENT_STATUSES.has(assignee.status),
+    );
+    if (node.status === "todo" && assigneeCanAct) {
+      // Todo work sits in a live owner's queue: that is a waiting path, not an
+      // attention signal. Parked (backlog) and unowned leaves stay attention,
+      // and in_progress without an active run keeps its own stall detection.
+      return {
+        covered: true,
+        stalled: false,
+        sampleBlockerIdentifier: nodeSample,
+        sampleStalledBlockerIdentifier: null,
+      };
     }
 
     return {
