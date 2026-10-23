@@ -193,6 +193,11 @@ import { queueLiveRunnerPrpCommand } from "../realtime/runner-prp-ws.js";
 import { questionResponseDeliveryService } from "../services/question-response-delivery.js";
 import { emitAgentTaskRunById } from "../services/agent-task-run-telemetry.js";
 import {
+  REASSIGNMENT_HOLD_RUN_STATUSES,
+  reassignmentRunDisposition,
+  scheduleReassignmentHandoverBackstop,
+} from "../services/reassignment-handover.js";
+import {
   createQueuedCommentQueue,
   QueuedCommentMutationError,
   QueuedCommentMutationForbiddenError,
@@ -6885,6 +6890,30 @@ export function issueRoutes(
     return runToInterrupt?.status === "running" ? runToInterrupt : null;
   }
 
+  /**
+   * The run a reassignment has to deal with: the one holding the issue's
+   * execution lock in whatever stage it is in (`running`, `queued`,
+   * `scheduled_retry`), or else the assignee's running run on this issue.
+   */
+  async function resolveReassignmentHoldRun(issue: {
+    id: string;
+    assigneeAgentId: string | null;
+    executionRunId?: string | null;
+  }) {
+    const lockHolder = issue.executionRunId
+      ? await heartbeat.getRun(issue.executionRunId)
+      : null;
+    if (
+      lockHolder &&
+      REASSIGNMENT_HOLD_RUN_STATUSES.includes(
+        lockHolder.status as (typeof REASSIGNMENT_HOLD_RUN_STATUSES)[number],
+      )
+    ) {
+      return lockHolder;
+    }
+    return resolveActiveIssueRun(issue);
+  }
+
   type IssueQueueDb = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
   type IssueQueueTx = Parameters<Parameters<Db["transaction"]>[0]>[0];
   type IssueQueueWake = typeof agentWakeupRequests.$inferSelect;
@@ -13454,13 +13483,24 @@ export function issueRoutes(
       // own run (for example handing work to a signoff reviewer).
       const issueMutationStopId = randomUUID();
       if (assigneeWillChange && existing.assigneeAgentId) {
+        // Best effort, never a precondition: a pausable runner goal makes the
+        // old run stop after its current turn. Adapters without a runner goal
+        // (`claude_local`, all agents in this company) return null here and are
+        // bounded by the heartbeat continuation gate instead.
         await stopRunnerGoalForOwnershipChange({
           companyId: existing.companyId,
           issueId: existing.id,
           agentId: existing.assigneeAgentId,
         });
-        const runToStopForReassignment = await resolveActiveIssueRun(existing);
-        if (runToStopForReassignment) {
+        const runToStopForReassignment = await resolveReassignmentHoldRun(existing);
+        if (
+          runToStopForReassignment &&
+          reassignmentRunDisposition(runToStopForReassignment) ===
+            "cancel_never_started"
+        ) {
+          // HIS-3477: the run never started, so cancelling it costs no work and
+          // releasing the execution lock now lets the new assignee's wake
+          // through instead of parking it behind a run that will never dispatch.
           const cancelled = await heartbeat.cancelRun(
             runToStopForReassignment.id,
             "Cancelled before issue reassignment",
@@ -13481,6 +13521,25 @@ export function issueRoutes(
             );
           }
           interruptedRunId = cancelled.id;
+        } else if (runToStopForReassignment) {
+          // HIS-3477: the run has started, so it keeps its current turn and the
+          // continuation gate refuses the next one with `issue_reassigned`.
+          // Hand over instead of killing the work in flight, whether or not a
+          // runner goal could be stopped above.
+          // This run is not cancelled, so it claims no `issueMutationStopId`,
+          // is not recorded as `interruptedRunId` (a terminal transition in the
+          // same request must still be able to cancel it) and keeps the
+          // assignee-derived write lock (`409 issue_write_assignee_run_lock`).
+          // The backstop cancels it only if it is still active ten minutes from
+          // now.
+          scheduleReassignmentHandoverBackstop(
+            {
+              getRun: (runId) => heartbeat.getRun(runId),
+              cancelRun: (runId, reason, options) =>
+                heartbeat.cancelRun(runId, reason, options),
+            },
+            { runId: runToStopForReassignment.id, issueId: existing.id },
+          );
         }
       }
 
