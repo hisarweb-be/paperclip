@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   DEFERRED_WAKE_SWEEP_LIMIT,
+  DEFERRED_WAKE_SWEEP_MAX_PROMOTIONS,
   DEFERRED_WAKE_SWEEP_STALE_AFTER_MS,
   createSweepDeferredIssueExecutionWakes,
 } from "./deferred-wake-sweep.js";
@@ -212,6 +213,71 @@ describe("createSweepDeferredIssueExecutionWakes", () => {
     expect(listStaleDeferredWakeIssues).toHaveBeenLastCalledWith(
       expect.objectContaining({ companyId: "company-7" }),
     );
+  });
+
+  it("stops promoting once the per-pass cap is reached and reports the remainder", async () => {
+    const { sweeper, drainIssue } = sweeperStub({
+      candidates: [candidate("issue-1"), candidate("issue-2"), candidate("issue-3")],
+      outcome: (issueId) => ({
+        action: "drained",
+        outcome: { kind: "promoted", run: promotedRun(`run-${issueId}`) },
+        postCommitEffects: [],
+      }),
+    });
+    const pass = createSweepDeferredIssueExecutionWakes({ sweeper });
+
+    const { result } = await pass({ now: NOW, maxPromotions: 2 });
+
+    expect(result).toMatchObject({
+      scanned: 2,
+      drained: 2,
+      promoted: 2,
+      deferredByPromotionCap: 1,
+      promotedRunIds: ["run-issue-1", "run-issue-2"],
+    });
+    // The third issue is never handed to the drain: a capped pass costs one
+    // read, not a transaction, and the next tick picks it up oldest-first.
+    expect(drainIssue).toHaveBeenCalledTimes(2);
+  });
+
+  it("defaults the promotion cap so one tick cannot start a run per parked wake", async () => {
+    const ids = Array.from({ length: DEFERRED_WAKE_SWEEP_MAX_PROMOTIONS + 3 }, (_, i) => `issue-${i + 1}`);
+    const { sweeper, drainIssue } = sweeperStub({
+      candidates: ids.map((id) => candidate(id)),
+      outcome: (issueId) => ({
+        action: "drained",
+        outcome: { kind: "promoted", run: promotedRun(`run-${issueId}`) },
+        postCommitEffects: [],
+      }),
+    });
+    const pass = createSweepDeferredIssueExecutionWakes({ sweeper });
+
+    const { result } = await pass({ now: NOW });
+
+    expect(result.promoted).toBe(DEFERRED_WAKE_SWEEP_MAX_PROMOTIONS);
+    expect(result.deferredByPromotionCap).toBe(3);
+    expect(drainIssue).toHaveBeenCalledTimes(DEFERRED_WAKE_SWEEP_MAX_PROMOTIONS);
+  });
+
+  it("does not let a pass of only skips consume the promotion budget", async () => {
+    const { sweeper } = sweeperStub({
+      candidates: [candidate("busy-1"), candidate("busy-2"), candidate("issue-3")],
+      outcome: (issueId) => issueId === "issue-3"
+        ? {
+          action: "drained",
+          outcome: { kind: "promoted", run: promotedRun("run-issue-3") },
+          postCommitEffects: [],
+        }
+        : { action: "skipped", reason: "live_execution_path" },
+    });
+    const pass = createSweepDeferredIssueExecutionWakes({ sweeper });
+
+    const { result } = await pass({ now: NOW, maxPromotions: 1 });
+
+    // Skips are one read each and start nothing, so they never block the
+    // promotion budget: the first free issue in the same pass still runs.
+    expect(result).toMatchObject({ scanned: 3, skipped: 2, promoted: 1, deferredByPromotionCap: 0 });
+    expect(result.skipReasons).toEqual({ live_execution_path: 2 });
   });
 
   it("does nothing at all when no issue holds a stale parked wake", async () => {

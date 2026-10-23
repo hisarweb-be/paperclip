@@ -12,6 +12,16 @@ export const DEFERRED_WAKE_SWEEP_STALE_AFTER_MS = 2 * 60 * 1000;
 /** Bounded per pass: the backstop must never turn one tick into an unbounded scan. */
 export const DEFERRED_WAKE_SWEEP_LIMIT = 50;
 
+/**
+ * Promotions this pass may start. The tick runs every few seconds, so an
+ * uncapped backfill would turn a hundred parked wakes into a hundred queued
+ * runs at once, which is the queue inflation the board decided against
+ * (HIS-3505 K5: at most five per round, oldest first). The candidates are read
+ * oldest-first, so a capped pass drains the longest-parked issues first and
+ * the next pass continues where it stopped.
+ */
+export const DEFERRED_WAKE_SWEEP_MAX_PROMOTIONS = 5;
+
 export type DeferredWakeSweepResult = {
   /** Issues the store returned as candidates for this pass. */
   scanned: number;
@@ -21,6 +31,11 @@ export type DeferredWakeSweepResult = {
   cancelled: number;
   skipped: number;
   failed: number;
+  /**
+   * Candidates this pass did not read because the promotion cap was reached.
+   * Non-zero means the backfill is still catching up; the next tick continues.
+   */
+  deferredByPromotionCap: number;
   skipReasons: Record<string, number>;
   promotedRunIds: string[];
   cancelledWakeIds: string[];
@@ -34,6 +49,7 @@ function emptyResult(): DeferredWakeSweepResult {
     cancelled: 0,
     skipped: 0,
     failed: 0,
+    deferredByPromotionCap: 0,
     skipReasons: {},
     promotedRunIds: [],
     cancelledWakeIds: [],
@@ -58,6 +74,8 @@ export function createSweepDeferredIssueExecutionWakes(deps: {
     now: Date;
     staleAfterMs?: number;
     limit?: number;
+    /** Overrides the per-pass promotion cap; cancels and skips are never capped. */
+    maxPromotions?: number;
     companyId?: string | null;
   }): Promise<{
     result: DeferredWakeSweepResult;
@@ -72,7 +90,20 @@ export function createSweepDeferredIssueExecutionWakes(deps: {
       ...(input.companyId ? { companyId: input.companyId } : {}),
     });
 
+    const maxPromotions = Math.max(0, input.maxPromotions ?? DEFERRED_WAKE_SWEEP_MAX_PROMOTIONS);
+    let promotionsLeft = maxPromotions;
+
     for (const candidate of candidates) {
+      // Once the pass has started `maxPromotions` promotions it stops for this
+      // tick: without that, one tick would start a run for every parked wake
+      // on the board at once. Nothing is lost, because the candidate list is
+      // oldest-first and a drained wake leaves it, so the next pass starts
+      // exactly where this one stopped. The rest is counted so the log shows
+      // how much backfill is still waiting.
+      if (promotionsLeft <= 0) {
+        result.deferredByPromotionCap = candidates.length - result.scanned;
+        break;
+      }
       result.scanned += 1;
       try {
         const outcome = await deps.sweeper.drainIssue(
@@ -97,6 +128,7 @@ export function createSweepDeferredIssueExecutionWakes(deps: {
           postCommitEffects.push(...outcome.postCommitEffects);
           if (outcome.outcome.kind === "promoted") {
             result.promoted += 1;
+            promotionsLeft -= 1;
             result.promotedRunIds.push(outcome.outcome.run.id);
           }
         } else if (outcome.action === "cancelled") {
