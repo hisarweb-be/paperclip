@@ -7,6 +7,11 @@ import {
   decideLegacyContinuation, legacyDispositionEpisode, legacyDispositionFingerprint,
   LEGACY_DISPOSITION_REPAIR_INSTRUCTION, type LegacyDispositionEpisode,
 } from "./legacy-continuation.js";
+import {
+  isRoutineExecutionIssue,
+  resolveRoutineExecutionRunner,
+  type RoutineExecutionRunnerResolution,
+} from "../routine-execution-binding.js";
 import { hasLiveLegacyController } from "../legacy-controller-lease.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { isWaitingConversation, settleConversationTurn, deliverConversationComments } from "../agent-conversations.js";
@@ -4322,6 +4327,55 @@ export function recoveryService(
     );
   }
 
+  async function getRoutineAssigneeAgentId(
+    companyId: string,
+    routineId: string | null,
+  ) {
+    if (!routineId) return null;
+    const [routine] = await db
+      .select({ assigneeAgentId: routines.assigneeAgentId })
+      .from(routines)
+      .where(and(eq(routines.companyId, companyId), eq(routines.id, routineId)))
+      .limit(1);
+    return routine?.assigneeAgentId ?? null;
+  }
+
+  // HIS-2579: routine execution issues run on the routine's executor because
+  // credential bindings (for example content publishing keys) follow that
+  // agent. When drift leaves the issue assigned elsewhere, rebind it before
+  // recovery picks a wake target so the work never lands on an agent whose
+  // run cannot authenticate the routine's tools.
+  async function rebindRoutineExecutionIssueAssignee(input: {
+    issue: typeof issues.$inferSelect;
+    runnerAgentId: string;
+    resolution: RoutineExecutionRunnerResolution;
+  }) {
+    const updated = await issuesSvc.update(input.issue.id, {
+      assigneeAgentId: input.runnerAgentId,
+      companyGuard: input.issue.companyId,
+    });
+    if (!updated) return null;
+    await logActivity(db, {
+      companyId: input.issue.companyId,
+      actorType: "system",
+      actorId: "recovery",
+      agentId: null,
+      runId: null,
+      action: "issue.routine_execution_rebound",
+      entityType: "issue",
+      entityId: input.issue.id,
+      details: {
+        identifier: input.issue.identifier,
+        source: "recovery.routine_execution_binding",
+        runnerSource: input.resolution.source,
+        runnerReason: input.resolution.reason,
+        previousAssigneeAgentId: input.issue.assigneeAgentId,
+        runnerAgentId: input.runnerAgentId,
+      },
+    });
+    return updated;
+  }
+
   async function reconcileStrandedAssignedIssues(opts?: {
     issueCreatedAtGte?: Date | null;
   }) {
@@ -4355,6 +4409,7 @@ export function recoveryService(
       successfulRunHandoffEscalated: 0,
       successfulRunHandoffRetried: 0,
       reviewParticipantRequeued: 0,
+      routineExecutionRebound: 0,
       escalated: 0,
       waitingOnReviewResolved: 0,
       providerQuotaMonitored: 0,
@@ -4421,6 +4476,58 @@ export function recoveryService(
         currentParticipant?.type === "agent"
           ? currentParticipant.agentId
           : null;
+      // HIS-2579: routine execution issues must keep running on the agent
+      // that owns the routine (and its credentials). Resolve the recorded
+      // executor before picking a wake target; drift rebinds the assignee
+      // instead of waking an agent that cannot authenticate the work, and an
+      // unresolvable executor stops recovery with an explicit reason.
+      if (
+        issue.status !== "in_review" &&
+        isRoutineExecutionIssue(issue.originKind)
+      ) {
+        const routineAssigneeAgentId = await getRoutineAssigneeAgentId(
+          issue.companyId,
+          issue.originId,
+        );
+        const runnerResolution = resolveRoutineExecutionRunner({
+          originKind: issue.originKind,
+          executionStateRaw: issue.executionState,
+          routineAssigneeAgentId,
+          assigneeAgentId: issue.assigneeAgentId,
+        });
+        if (!runnerResolution.runnerAgentId) {
+          const stopped = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: issue.status as StrandedPreviousStatus,
+            latestRun: null,
+            recoveryCause: "configuration_incomplete",
+            comment:
+              "Paperclip stopped automatic recovery for this routine execution issue because no executor could be resolved: " +
+              "there is no frozen execution executor, no routine assignee, and no issue assignee. " +
+              "Rebind the issue to an agent that can run the routine before recovery continues.",
+          });
+          if (stopped) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+        if (runnerResolution.runnerAgentId !== issue.assigneeAgentId) {
+          const rebound = await rebindRoutineExecutionIssueAssignee({
+            issue,
+            runnerAgentId: runnerResolution.runnerAgentId,
+            resolution: runnerResolution,
+          });
+          if (!rebound) {
+            result.skipped += 1;
+            continue;
+          }
+          issue.assigneeAgentId = runnerResolution.runnerAgentId;
+          result.routineExecutionRebound += 1;
+        }
+      }
       const agentId =
         issue.status === "in_review" && participantAgentId
           ? participantAgentId
