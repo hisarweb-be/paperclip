@@ -10,6 +10,19 @@ permissions:
 
 jobs:
   ci:
-    # Master requires CODEOWNERS review for .github/**, including this workflow.
-    # The AWS runner group permits pr-trusted.yml@refs/heads/master.
-    uses: paperclipai/paperclip/.github/workflows/pr-trusted.yml@master
+    # Pinned, not @master.
+    #
+    # This caller decides which version of paperclipai/paperclip's reusable
+    # workflow actually runs; @master silently swaps in a newer CI definition
+    # than the one this fork's tree was written for. When upstream added
+    # build:runtime, scripts/server-boot-smoke.sh,
+    # scripts/docker-compose-secrets.test.mjs and the general-workspaces-c
+    # group, every fork PR went red on ci / Build, ci / Docker context
+    # integrity, ci / General tests (workspaces-c) and ci / verify while the
+    # PR itself was fine (HIS-3521).
+    #
+    # The pinned SHA is this fork's snapshot commit in upstream, whose
+    # .github/workflows/pr-trusted.yml is byte-identical to the copy in this
+    # tree. Bump it only together with a fork catch-up to that upstream commit
+    # (see doc/CI-FORK-DRIFT.md), never on its own.
+    uses: paperclipai/paperclip/.github/workflows/pr-trusted.yml@59c07ede72dc08b8aba149a01cc11e0b7a204621
