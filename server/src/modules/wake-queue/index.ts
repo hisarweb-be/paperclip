@@ -1,6 +1,7 @@
 import type { Db } from "@paperclipai/db";
 import {
   createAdmissionTransactionScope as buildAdmissionTransactionScope,
+  createPostgresDeferredWakeSweeper,
   createPostgresWakeQueueAdapter,
   createWakeAdmissionReader,
   createWakeAdmissionWriter,
@@ -8,6 +9,7 @@ import {
 import { createQueuedCommentIssueLockWriter } from "./adapters/queued-comment-postgres.js";
 import type { QueuedCommentQueuePostgresAdapterDeps } from "./adapters/queued-comment-postgres.js";
 import { createAdmitWakeBehindIssueExecution, createReleaseIssueExecution } from "./application/use-cases.js";
+import { createSweepDeferredIssueExecutionWakes } from "./application/deferred-wake-sweep.js";
 import {
   createDiscardQueuedComment,
   createEditQueuedComment,
@@ -35,6 +37,16 @@ export type {
   ReleaseRecoveryBlockedNoticeKind,
   TransactionScope,
 } from "./application/ports.js";
+export type {
+  DeferredWakeSweepIssue,
+  DeferredWakeSweepIssueResult,
+} from "./application/ports.js";
+export type { DeferredWakeSweepResult } from "./application/deferred-wake-sweep.js";
+export {
+  DEFERRED_WAKE_SWEEP_LIMIT,
+  DEFERRED_WAKE_SWEEP_STALE_AFTER_MS,
+  createSweepDeferredIssueExecutionWakes,
+} from "./application/deferred-wake-sweep.js";
 export type { AdmitWakeBehindIssueExecutionInput, AdmitWakeBehindIssueExecutionResult, ReleaseIssueExecutionInput } from "./application/use-cases.js";
 export {
   QueuedCommentMutationError,
@@ -103,6 +115,14 @@ export function createWakeQueue(db: Db, deps: WakeQueueDeps) {
     createAdmissionTransactionScope(companyId: string, tx: Db): TransactionScope {
       return buildAdmissionTransactionScope(companyId, tx);
     },
+    /**
+     * Backstop for wakes parked on `deferred_issue_execution` whose owner run
+     * already ended without a release event. It reuses `runReleaseDrain`
+     * through the sweeper adapter, so promotion stays in one place.
+     */
+    sweepDeferredIssueExecutionWakes: createSweepDeferredIssueExecutionWakes({
+      sweeper: createPostgresDeferredWakeSweeper(db, deps),
+    }),
   };
 }
 

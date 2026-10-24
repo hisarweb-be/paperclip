@@ -130,8 +130,12 @@ type PauseHoldFacts = Awaited<ReturnType<WakeQueueTransaction["getPauseHoldFacts
  * without a promotion, decides the release-recovery outcome. Every read and
  * write happens through `ports`, already bound to the module's own
  * transaction by the caller.
+ *
+ * Exported so the periodic deferred-wake backstop
+ * (`deferred-wake-sweep.ts`) runs this exact drain instead of a second
+ * promotion path; it passes the issue and the latest terminal run it replays.
  */
-async function runReleaseDrain(
+export async function runReleaseDrain(
   locked: LockedIssueExecution,
   ports: { host: WakeQueueHost; transaction: WakeQueueTransaction },
   input: ReleaseIssueExecutionInput,

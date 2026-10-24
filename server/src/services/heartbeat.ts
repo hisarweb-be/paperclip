@@ -19915,6 +19915,36 @@ export function heartbeatService(
     return recovery.sweepStaleIssueLocks();
   }
 
+  // Backstop for wakes parked on `deferred_issue_execution` whose owning run
+  // already ended. That queue is normally drained by
+  // `releaseIssueExecutionAndPromote`, which only fires from a run
+  // finalization or an explicit event; when that one drain is missed nothing
+  // re-reads the wake, and `hasActiveExecutionPath()` counts a deferred wake as
+  // a live path, so the issue also drops out of the stranded-recovery lanes.
+  //
+  // The sweep never promotes a wake itself: it selects the issue and replays
+  // the existing `runReleaseDrain` with `suppressImmediateRecovery`, so a card
+  // with nothing to do costs one read and no provider session.
+  async function sweepDeferredIssueExecutionWakes(opts?: {
+    companyId?: string | null;
+    now?: Date;
+  }) {
+    const now = opts?.now ?? new Date();
+    const { result, postCommitEffects } = await wakeQueue.sweepDeferredIssueExecutionWakes({
+      now,
+      ...(opts?.companyId ? { companyId: opts.companyId } : {}),
+    });
+    await applyWakeQueuePostCommitEffects(postCommitEffects);
+    // A promoted wake is the only branch that starts a run, so the quieter
+    // debug line keeps the counters visible without logging every 15s tick.
+    if (result.promoted > 0 || result.cancelled > 0 || result.failed > 0) {
+      logger.info(result, "deferred issue-execution wake sweep resumed parked wakes");
+    } else {
+      logger.debug(result, "deferred issue-execution wake sweep found nothing to resume");
+    }
+    return result;
+  }
+
   function issueIdFromRunContext(contextSnapshot: unknown) {
     const context = parseObject(contextSnapshot);
     return (
@@ -27445,6 +27475,11 @@ export function heartbeatService(
       const agentNameKey = normalizeAgentNameKey(agent.name);
 
       const cancelledRunsToEmit: (typeof heartbeatRuns.$inferSelect)[] = [];
+      // A queued holder cancelled for reassignment never finalizes, so the
+      // release drain that normally fires on run finalization never runs for
+      // it. Wake-queue activation is collected here and released after the
+      // transaction commits.
+      const lockReleasedRunsToDrain: (typeof heartbeatRuns.$inferSelect)[] = [];
 
       const outcome = await db
         .transaction(async (tx) => {
@@ -28133,6 +28168,7 @@ export function heartbeatService(
               .returning();
             if (cancelled.length > 0) {
               cancelledRunsToEmit.push(cancelled[0]);
+              lockReleasedRunsToDrain.push(cancelled[0]);
               if (activeExecutionRun.wakeupRequestId) {
                 await tx
                   .update(agentWakeupRequests)
@@ -28835,6 +28871,25 @@ export function heartbeatService(
       // lookup must not delay them.
       for (const cancelledRun of cancelledRunsToEmit) {
         void emitAgentTaskRun(db, cancelledRun);
+      }
+
+      // A queued holder cancelled for reassignment is terminal without ever
+      // running, so no finalization path calls the release drain and any wake
+      // parked in `deferred_issue_execution` behind its lock would stay parked
+      // forever. Release the issue execution lock for it now that the
+      // transaction committed. The drain resolves the issue through the run's
+      // `contextSnapshot.issueId`, promotes at most one deferred wake, and is
+      // best-effort: a failure here must not fail the enqueue that triggered
+      // the reassignment.
+      for (const lockReleasedRun of lockReleasedRunsToDrain) {
+        await releaseIssueExecutionAndPromote(lockReleasedRun, {
+          suppressImmediateRecovery: true,
+        }).catch((err) => {
+          logger.warn(
+            { err, runId: lockReleasedRun.id },
+            "failed to promote deferred wakes after reassignment lock release",
+          );
+        });
       }
 
       if (outcome.kind === "durable") {
@@ -30356,6 +30411,8 @@ export function heartbeatService(
     resumeExecutionWaitComments,
 
     sweepStaleIssueLocks,
+
+    sweepDeferredIssueExecutionWakes,
 
     reconcileResolvedDependencyWakes,
 
