@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -72,7 +72,17 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
     await tempDb?.cleanup();
   });
 
-  async function seedCrossAgentScenario(opts: { holderStatus: "queued" | "running" }) {
+  async function seedCrossAgentScenario(opts: {
+    holderStatus: "queued" | "running";
+    /**
+     * Seed the state the assignee PATCH leaves behind when it hands a
+     * started run over (HIS-3492/HIS-3599): the execution lock fields are
+     * cleared while the old owner's started run keeps executing with the
+     * issue in its context snapshot. Deferral then has to find the holder
+     * through the legacy fallback instead of `issues.executionRunId`.
+     */
+    postPatchHandover?: boolean;
+  }) {
     const companyId = randomUUID();
     const coderAgentId = randomUUID();
     const reviewerAgentId = randomUUID();
@@ -131,6 +141,7 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
       status: opts.holderStatus,
       wakeupRequestId,
       contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
+      ...(opts.postPatchHandover ? { startedAt: new Date() } : {}),
     });
 
     await db.insert(issues).values({
@@ -140,9 +151,13 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
       status: "in_review",
       priority: "medium",
       assigneeAgentId: reviewerAgentId,
-      executionRunId: holderRunId,
-      executionAgentNameKey: "coder",
-      executionLockedAt: new Date(),
+      ...(opts.postPatchHandover
+        ? {}
+        : {
+            executionRunId: holderRunId,
+            executionAgentNameKey: "coder",
+            executionLockedAt: new Date(),
+          }),
       issueNumber: 1,
       identifier: `${issuePrefix}-1`,
     });
@@ -358,5 +373,266 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
         }),
       );
     });
+  });
+
+  // HIS-3599 acceptance criterion 2: the assignee PATCH clears the execution
+  // lock fields (issues.executionRunId = null) while the handed-over run of
+  // the old owner keeps executing with the issue in its context snapshot.
+  // The new owner's `issue_assigned` wake must then defer through the legacy
+  // fallback (contextSnapshot lookup): no run while the holder is still
+  // running, and exactly one run once the holder has finished its turn.
+  it("parks the new owner's wake via the legacy fallback and grants exactly one run after the handed-over holder finishes", async () => {
+    const { companyId, reviewerAgentId, issueId, holderRunId } =
+      await seedCrossAgentScenario({
+        holderStatus: "running",
+        postPatchHandover: true,
+      });
+
+    // Keep the reviewer's queue from auto-claiming/executing the granted run
+    // during this test (same pattern as the queued-holder scenario above).
+    await db
+      .update(agents)
+      .set({
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      })
+      .where(eq(agents.id, reviewerAgentId));
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: reviewerAgentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: { wakeReason: "test_busy_slot" },
+      startedAt: new Date(),
+    });
+
+    const heartbeat = heartbeatService(db);
+
+    const reviewerRunsOnIssue = () =>
+      db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.agentId, reviewerAgentId),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          ),
+        );
+
+    // (a) Vóór lock-vrijgave: geen run voor de nieuwe eigenaar.
+    const blocked = await heartbeat.wakeup(reviewerAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
+      requestedByActorType: "user",
+      requestedByActorId: "local-board",
+    });
+
+    expect(blocked).toBeNull();
+    expect(await reviewerRunsOnIssue()).toHaveLength(0);
+
+    const deferred = await db
+      .select({ status: agentWakeupRequests.status })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.agentId, reviewerAgentId),
+          eq(agentWakeupRequests.status, "deferred_issue_execution"),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    expect(deferred).not.toBeNull();
+
+    // The handover must leave the started holder alone: still running, no
+    // error, not finished.
+    const holderDuringHold = await db
+      .select({
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+        finishedAt: heartbeatRuns.finishedAt,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, holderRunId))
+      .then((rows) => rows[0] ?? null);
+    expect(holderDuringHold?.status).toBe("running");
+    expect(holderDuringHold?.errorCode).toBeNull();
+    expect(holderDuringHold?.finishedAt).toBeNull();
+
+    // The deferral ran through the legacy fallback: the lock the PATCH
+    // cleared is re-stamped onto the holder found via contextSnapshot.
+    const restamped = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(restamped?.executionRunId).toBe(holderRunId);
+
+    // (b) Na lock-vrijgave: precies één run voor de nieuwe eigenaar. The
+    // handed-over run finished its turn; the continuation gate refused the
+    // next one because the assignee changed, so the execution lock is free.
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded", finishedAt: new Date(), updatedAt: new Date() })
+      .where(eq(heartbeatRuns.id, holderRunId));
+    await db
+      .update(issues)
+      .set({ executionRunId: null, executionLockedAt: null, updatedAt: new Date() })
+      .where(eq(issues.id, issueId));
+
+    const granted = await heartbeat.wakeup(reviewerAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
+      requestedByActorType: "user",
+      requestedByActorId: "local-board",
+    });
+
+    expect(granted).not.toBeNull();
+    expect(granted?.agentId).toBe(reviewerAgentId);
+
+    const reviewerRunsAfter = await reviewerRunsOnIssue();
+    expect(reviewerRunsAfter).toHaveLength(1);
+    expect(reviewerRunsAfter[0]?.id).toBe(granted?.id);
+  });
+
+  // Regression: the queued holder cancelled on reassignment is terminal
+  // without ever running, so its finalization-side release drain never fires.
+  // A wake that was parked in `deferred_issue_execution` behind that holder's
+  // lock must not stay parked: the reassignment path has to run the release
+  // drain itself and promote (or retire) the parked wake.
+  it("promotes a wake parked in deferred_issue_execution when the queued holder's lock is released on reassignment", async () => {
+    const { companyId, coderAgentId, reviewerAgentId, issueId, holderRunId } =
+      await seedCrossAgentScenario({ holderStatus: "queued" });
+
+    // Third agent whose wake was parked behind the holder's lock before the
+    // reassignment happened.
+    const thirdAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: thirdAgentId,
+      companyId,
+      name: "Planner",
+      role: "engineer",
+      status: "idle",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const deferredWakeId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: deferredWakeId,
+      companyId,
+      agentId: thirdAgentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      status: "deferred_issue_execution",
+      requestedByActorType: "user",
+      requestedByActorId: "local-board",
+      payload: {
+        issueId,
+        _paperclipWakeContext: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_assigned",
+        },
+      },
+    });
+
+    // Keep both agents' queues from auto-claiming the newly queued runs during
+    // this unit test: cap concurrency at 1 and occupy that one slot each, so
+    // the assertions below see the queue state and not a finished run.
+    await db
+      .update(agents)
+      .set({ runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } } })
+      .where(inArray(agents.id, [reviewerAgentId, thirdAgentId]));
+    await db.insert(heartbeatRuns).values([
+      {
+        id: randomUUID(),
+        companyId,
+        agentId: reviewerAgentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "running",
+        contextSnapshot: { wakeReason: "test_busy_slot" },
+        startedAt: new Date(),
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        agentId: thirdAgentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "running",
+        contextSnapshot: { wakeReason: "test_busy_slot" },
+        startedAt: new Date(),
+      },
+    ]);
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.wakeup(reviewerAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
+      requestedByActorType: "user",
+      requestedByActorId: "local-board",
+    });
+
+    const holder = await db
+      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, holderRunId))
+      .then((rows) => rows[0] ?? null);
+    expect(holder).toEqual({
+      status: "cancelled",
+      errorCode: "lock_released_on_reassignment",
+    });
+
+    const parkedWake = await db
+      .select({
+        status: agentWakeupRequests.status,
+        runId: agentWakeupRequests.runId,
+        finishedAt: agentWakeupRequests.finishedAt,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, deferredWakeId))
+      .then((rows) => rows[0] ?? null);
+
+    // Promoted or retired, but never left parked on the deferred status.
+    expect(parkedWake?.status).not.toBe("deferred_issue_execution");
+    expect(parkedWake?.runId ?? parkedWake?.finishedAt).not.toBeNull();
+
+    const thirdAgentRuns = await db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, thirdAgentId));
+
+    const promotedRuns = thirdAgentRuns.filter(
+      (run) => (run.contextSnapshot as { issueId?: string } | null)?.issueId === issueId,
+    );
+    expect(promotedRuns).toHaveLength(1);
+    expect(parkedWake?.runId).toBe(promotedRuns[0]!.id);
+    expect(promotedRuns[0]!.status).toBe("queued");
+
+    // The drain promotes at most one wake and must not start a second
+    // enqueue cycle: the holder stays cancelled and no extra coder run exists.
+    const coderRuns = await db
+      .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, coderAgentId));
+    expect(coderRuns).toHaveLength(1);
+    expect(coderRuns[0]!.status).toBe("cancelled");
   });
 });

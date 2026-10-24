@@ -29,8 +29,11 @@ function readTrustedPrWorkflow() {
   const caller = readFileSync(prCallerWorkflow, "utf8");
   assert.match(
     caller,
-    /^\s+uses: paperclipai\/paperclip\/\.github\/workflows\/pr-trusted\.yml@master\s*$/m,
-    "pr.yml must call the trusted workflow from CODEOWNERS-protected master",
+    /^\s+uses: paperclipai\/paperclip\/\.github\/workflows\/pr-trusted\.yml@(?:[0-9a-f]{40}|master)\s*$/m,
+    // Upstream calls the workflow at CODEOWNERS-protected master; a fork has
+    // no such protection and must pin an immutable commit SHA instead, so the
+    // CI that runs belongs to the same tree as the code (doc/CI-FORK-DRIFT.md).
+    "pr.yml must call the trusted workflow at an immutable commit SHA or CODEOWNERS-protected master",
   );
   // Validate proposed workflow changes locally; CI executes the merged master version.
   return readFileSync(trustedPrWorkflow, "utf8");

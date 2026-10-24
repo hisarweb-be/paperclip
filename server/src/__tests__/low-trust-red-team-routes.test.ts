@@ -945,7 +945,7 @@ describeEmbeddedPostgres(
       await waitFor(async () => Boolean(await queued()));
       const wake = (await queued())!;
       expect(wake).toMatchObject({ requestedByActorType: "user", requestedByActorId: "board-user" });
-      const [directRun] = await db.update(heartbeatRuns).set({ status: "running" })
+      const [directRun] = await db.update(heartbeatRuns).set({ status: "running", startedAt: new Date() })
         .where(eq(heartbeatRuns.id, wake.runId!)).returning();
       await db.update(issues).set({ status: "in_progress", checkoutRunId: directRun.id, executionRunId: directRun.id })
         .where(eq(issues.id, created.body.id));
@@ -976,13 +976,26 @@ describeEmbeddedPostgres(
         .send({ status: "in_review", assigneeAgentId: null, assigneeUserId: "board-user", comment: "Ready for human review" });
       expect(handoff.status, JSON.stringify(handoff.body)).toBe(200);
       const [stopped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, directRun.id));
-      expect(stopped).toMatchObject({ status: "cancelled", errorCode: "issue_reassigned" });
-      const returned = await request(board).patch(`/api/issues/${created.body.id}`)
-        .send({ status: "backlog", assigneeAgentId: fixture.agents.lowTrust.id, assigneeUserId: null });
-      expect(returned.status, JSON.stringify(returned.body)).toBe(200);
-      // Reassignment back does not revive the cancelled run's human request.
+      // HIS-3477: a started run is handed over instead of killed, so it is still
+      // running here. What ends its authority is the reassignment itself: the
+      // continuation gate refuses its next turn with `issue_reassigned` and the
+      // issue no longer carries this run as its executor.
+      expect(stopped).toMatchObject({ status: "running", errorCode: null });
+      // A service-level assignment back creates no human direction record, so
+      // the handed-over run's cancelled request must stay dead across it.
+      await issueService(db).update(created.body.id, {
+        status: "backlog", assigneeAgentId: fixture.agents.lowTrust.id, assigneeUserId: null,
+      });
       const staleRead = await request(directedAgent).get(`/api/issues/${created.body.id}`);
       expect([403, 404]).toContain(staleRead.status);
+      // A fresh board assignment is new human direction and does authorize this
+      // exact task again. That grant comes from the assignment receipt, not from
+      // reviving the handed-over run's cancelled request.
+      const reassigned = await request(board).patch(`/api/issues/${created.body.id}`)
+        .send({ status: "backlog", assigneeAgentId: fixture.agents.lowTrust.id, assigneeUserId: null });
+      expect(reassigned.status, JSON.stringify(reassigned.body)).toBe(200);
+      const reassignedRead = await request(directedAgent).get(`/api/issues/${created.body.id}`);
+      expect(reassignedRead.status, JSON.stringify(reassignedRead.body)).toBe(200);
 
     });
 
