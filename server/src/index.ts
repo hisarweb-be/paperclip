@@ -1161,6 +1161,11 @@ async function startServerWithDatabaseTeardown(
     ["replacement", () => heartbeat ? reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: run => verifyStoppedNativeSessionForReplacement(db, run) }) : undefined],
     ["reconciliation_delivery", () => heartbeat ? deliverReconciledExecutions(db, heartbeat.wakeup) : undefined],
     ["status_delivery", () => deliverExecutionStatuses(db)],
+    // The deferred-wake queue is otherwise drained only by a run finalization
+    // or an explicit event. Without this tick a parked wake stays parked
+    // forever and, because `hasActiveExecutionPath()` counts it as a live path,
+    // also keeps the issue out of the stranded-recovery lanes.
+    ["deferred_issue_execution_wakes", () => heartbeat ? heartbeat.sweepDeferredIssueExecutionWakes() : undefined],
     ["automatic_disposition", () => settleUnrecoverableExecutions(db)],
     ["local_ai_login_cleanup", () => localAiLoginService(db).reapExpired()],
   ] as const;
@@ -1576,6 +1581,18 @@ async function startServerWithDatabaseTeardown(
         const swept = await heartbeat.sweepStaleIssueLocks();
         if (swept.cleared > 0) {
           logger.warn({ ...swept }, "startup stale-lock sweeper cleared issue locks");
+        }
+
+        // Runs after the orphan reap above, so a lock left behind by a dead
+        // process is already gone by the time the backstop reads it. This pass
+        // is the backfill for wakes that were parked before this sweeper
+        // existed.
+        const deferredWakesSwept = await heartbeat.sweepDeferredIssueExecutionWakes();
+        if (deferredWakesSwept.promoted > 0 || deferredWakesSwept.cancelled > 0) {
+          logger.warn(
+            { ...deferredWakesSwept },
+            "startup deferred-wake backstop resumed parked issue executions",
+          );
         }
       })().catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
