@@ -75,14 +75,16 @@ describe("ArtifactGroupCard", () => {
     }
   });
 
-  it("shows a stack effect and plural count when count > 1", () => {
+  it("shows the plural count without decorative stack layers when count > 1", () => {
     mounted = render(sampleGroup({ count: 3 }));
     const card = mounted.container.querySelector('[data-testid="artifact-group-card"]') as HTMLElement;
     expect(card).not.toBeNull();
     expect(card.getAttribute("data-stacked")).toBe("true");
     expect(card.getAttribute("data-count")).toBe("3");
-    // Two decorative stack layers sit behind the card.
-    expect(mounted.container.querySelectorAll('[data-testid="artifact-stack-layer"]').length).toBe(2);
+    // HIS-2659 audit: the two decorative layers behind the card were removed, so
+    // no group state paints extra borders. Nothing may come back under the old name.
+    expect(mounted.container.querySelectorAll('[data-testid="artifact-stack-layer"]').length).toBe(0);
+    expect(mounted.container.querySelectorAll(".artifact-stack-layer").length).toBe(0);
     expect(mounted.container.textContent).toContain("3 artifacts");
   });
 
