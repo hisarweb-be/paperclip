@@ -9,6 +9,7 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import { artifactByteSize, artifactContentType, artifactFilename } from "@/lib/artifact-display";
 import { artifactStatus } from "@/lib/artifact-status";
 import { cn } from "@/lib/utils";
@@ -68,7 +69,7 @@ export function ArtifactExpertPanel({
       2,
     );
     try {
-      await navigator.clipboard?.writeText(payload);
+      await copyTextToClipboard(payload);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 2000);
     } catch {
