@@ -144,6 +144,10 @@ import {
   isStrandedIssueRecoveryOriginKind,
 } from "./origins.js";
 import { withRecoveryContext } from "./status-only-context.js";
+import {
+  isLeaseCancelledRun,
+  isRunSucceededForRecovery as sharedIsRunSucceededForRecovery,
+} from "./run-outcome.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
 import {
   collectDispositionRepairSourceState,
@@ -240,7 +244,7 @@ type LatestIssueRun =
     })
   | null;
 type SuccessfulLatestIssueRun = NonNullable<LatestIssueRun> & {
-  status: "succeeded";
+  status: "succeeded" | "cancelled";
 };
 
 export type StrandedRecoveryCause =
@@ -527,6 +531,8 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
 // than escalating it as stranded.
 const CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE =
   "issue_continuation_waiting_on_review";
+// LEASE_CANCELLATION_ERROR_CODE and isRunSucceededForRecovery live in
+// ./run-outcome.ts so they can be tested without pulling in this module.
 const INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS = 3;
 
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
@@ -881,9 +887,20 @@ function isUnsuccessfulTerminalIssueRun(latestRun: LatestIssueRun) {
   );
 }
 
+// Type-predicate wrapper around the shared predicate in ./run-outcome.ts, so
+// callers below keep the SuccessfulLatestIssueRun narrowing.
+function isRunSucceededForRecovery(
+  latestRun: LatestIssueRun,
+): latestRun is SuccessfulLatestIssueRun {
+  return sharedIsRunSucceededForRecovery(latestRun);
+}
+
 function isSuccessfulInProgressContinuationRun(
   latestRun: LatestIssueRun,
 ): latestRun is SuccessfulLatestIssueRun {
+  // Deliberately NOT isRunSucceededForRecovery: this reader enqueues a new
+  // continuation round, and the CEO decision (HIS-3597 q2) keeps wake-starting
+  // readers on `succeeded` only.
   return latestRun?.status === "succeeded";
 }
 
@@ -1376,7 +1393,9 @@ export function recoveryService(
     if (issue.monitorNextCheckAt) return true;
     if (
       issue.status === "in_progress" &&
-      latestRun?.status === "succeeded" &&
+      // "Is the work done?" — a lease-cancelled run delivered its work, so it
+      // can own a durable wait path just like a succeeded run (HIS-3613).
+      isRunSucceededForRecovery(latestRun) &&
       latestRun.agentId === issue.assigneeAgentId &&
       (await hasCommittedNativeBoardResponseWait(db, {
         companyId: issue.companyId,
@@ -1394,7 +1413,9 @@ export function recoveryService(
     // board/internal run on the same issue retains normal recovery semantics.
     if (
       issue.status === "in_progress" &&
-      latestRun?.status === "succeeded" &&
+      // Same question here: the chat turn was delivered even if the controller
+      // cancelled the run afterwards (HIS-3613).
+      isRunSucceededForRecovery(latestRun) &&
       isExternalChatPresentationContext(latestRun.contextSnapshot)
     ) {
       const activeConversation = await db
@@ -4453,7 +4474,9 @@ export function recoveryService(
       }
       if (issue.conversationAgentId) {
         const lastRun = await getLatestIssueRun(issue.companyId, issue.id);
-        if (lastRun?.status === "succeeded") {
+        // The conversation turn itself was produced; a lease cancellation after
+        // the adapter finished must not leave the turn unsettled (HIS-3613).
+        if (isRunSucceededForRecovery(lastRun)) {
           if (await settleConversationTurn(db, (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, lastRun.id)))[0]!)) {
             const [current] = await db.select().from(issues).where(eq(issues.id, issue.id));
             if (current) Object.assign(issue, current);
@@ -4781,7 +4804,9 @@ export function recoveryService(
         continue;
       }
       if (
-        latestRun?.status === "succeeded" &&
+        // Work delivered, waiting on a real path: not stranded, so do not
+        // escalate a lease-cancelled run either (HIS-3613).
+        isRunSucceededForRecovery(latestRun) &&
         (await hasPersistedDurableWaitPath(issue, latestRun))
       ) {
         result.skipped += 1;
@@ -5243,7 +5268,9 @@ export function recoveryService(
         }
 
         if (
-          latestRun.status === "succeeded" &&
+          // The run did its work on this assignment; a controller-side lease
+          // cancellation is not a reason to dispatch it again (HIS-3613).
+          isRunSucceededForRecovery(latestRun) &&
           !(await wasTodoHandedBackDuringOrAfterLatestRun(issue, latestRun))
         ) {
           result.skipped += 1;

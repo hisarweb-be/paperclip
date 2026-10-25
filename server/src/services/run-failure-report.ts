@@ -11,6 +11,7 @@ import {
 } from "./run-failure-diagnostics.js";
 import { logger } from "../middleware/logger.js";
 import { isUnexpectedRunCancellation } from "./run-cancellation.js";
+import { isLeaseCancelledRun } from "./recovery/run-outcome.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 
@@ -54,6 +55,9 @@ function readTaskId(run: HeartbeatRun): string | null {
 export function reportRunFailure(db: Db, run: HeartbeatRun, options: RunFailureReportOptions = {}): Promise<void> {
   if (!isRunFailureStatus(run.status)) return Promise.resolve();
   if (run.status === "cancelled" && !isUnexpectedRunCancellation(run)) return Promise.resolve();
+  // A lease-cancelled run delivered its work (CEO decision HIS-3597 q2, HIS-3613).
+  // Counting it in the failure tally would report delivered work as a failure.
+  if (isLeaseCancelledRun(run)) return Promise.resolve();
   const runStatus = run.status;
   const report = captureTerminalRunFailure(db, run, runStatus, options);
   pendingRunFailureReports.add(report);
