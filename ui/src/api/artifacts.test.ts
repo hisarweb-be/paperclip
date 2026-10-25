@@ -24,6 +24,7 @@ function sampleArtifact(overrides: Partial<CompanyArtifact> = {}): CompanyArtifa
     issue: { id: "issue-1", identifier: "PAP-10205", title: "Demo reel" },
     project: { id: "proj-1", name: "Paperclip App" },
     createdByAgent: { id: "agent-1", name: "ClaudeCoder" },
+    createdAt: "2026-06-01T00:00:00.000Z",
     updatedAt: "2026-06-01T00:00:00.000Z",
     href: "/issues/PAP-10205#work-product-wp-1",
     ...overrides,
