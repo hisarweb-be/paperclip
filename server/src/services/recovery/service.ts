@@ -144,6 +144,10 @@ import {
   isStrandedIssueRecoveryOriginKind,
 } from "./origins.js";
 import { withRecoveryContext } from "./status-only-context.js";
+import {
+  isLeaseCancelledRun,
+  isRunSucceededForRecovery as sharedIsRunSucceededForRecovery,
+} from "./run-outcome.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
 import {
   collectDispositionRepairSourceState,
@@ -527,12 +531,8 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
 // than escalating it as stranded.
 const CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE =
   "issue_continuation_waiting_on_review";
-/**
- * Stamped by the legacy-controller lease when it aborts a run whose adapter
- * side already produced a clean result. Such a run delivered its work; the
- * controller interrupted it. See isRunSucceededForRecovery below.
- */
-const LEASE_CANCELLATION_ERROR_CODE = "cancelled_controller_lease_lost";
+// LEASE_CANCELLATION_ERROR_CODE and isRunSucceededForRecovery live in
+// ./run-outcome.ts so they can be tested without pulling in this module.
 const INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS = 3;
 
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
@@ -887,27 +887,12 @@ function isUnsuccessfulTerminalIssueRun(latestRun: LatestIssueRun) {
   );
 }
 
-/**
- * Recovery's own question is "did this run deliver its work?" — not "did the
- * row end as `succeeded`". A run the legacy-controller lease cancelled after
- * the adapter had already produced a clean result (exitCode 0, subtype
- * success) did deliver its work; the cancellation came from the controller,
- * not from the work. The run row keeps `status: "cancelled"` (the abort really
- * happened, rewriting it would falsify the record); only the reader decides.
- *
- * CEO decision 21 Oct 2026 on HIS-3597 question 2. Only readers whose question
- * is "is the work done?" may use this. Readers that start a new round or a wake
- * message keep testing `status === "succeeded"`, because a lease-cancelled run
- * was already followed up by the controller.
- */
+// Type-predicate wrapper around the shared predicate in ./run-outcome.ts, so
+// callers below keep the SuccessfulLatestIssueRun narrowing.
 function isRunSucceededForRecovery(
   latestRun: LatestIssueRun,
 ): latestRun is SuccessfulLatestIssueRun {
-  if (!latestRun) return false;
-  if (latestRun.status === "succeeded") return true;
-  if (latestRun.status !== "cancelled") return false;
-  if (latestRun.errorCode === LEASE_CANCELLATION_ERROR_CODE) return true;
-  return parseObject(latestRun.resultJson).leaseCancellation != null;
+  return sharedIsRunSucceededForRecovery(latestRun);
 }
 
 function isSuccessfulInProgressContinuationRun(
