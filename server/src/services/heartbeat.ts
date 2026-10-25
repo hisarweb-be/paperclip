@@ -37,6 +37,12 @@ import { connectionIntentService } from "./connection-intents.js";
 import { managedAiSessionFingerprintConfig, prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, isAiConnectionBusy, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
 import { aiConnectionBindingSchema } from "@paperclipai/shared";
 import { executionBlockerPredicate, getExecutionBlocker } from "./execution-blocker.js";
+import {
+  ISSUE_RETRY_HOURLY_BUDGET_MAX_CHAINS,
+  ISSUE_RETRY_HOURLY_BUDGET_REASON,
+  ISSUE_RETRY_HOURLY_BUDGET_WINDOW_MS,
+  countIssueRetryChainsSince,
+} from "./issue-retry-budget.js";
 import { CONVERSATION_CONTINUATION_POLICY, claimedAdapterType, runUsedConversationAdapter, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
 import { recordExecutionWait } from "./execution-wait.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-runtime/native-review-participant.js";
@@ -15674,7 +15680,8 @@ export function heartbeatService(
             | "issue_cancelled"
             | "issue_terminal_status"
             | "issue_not_in_progress"
-            | "issue_execution_lock_changed";
+            | "issue_execution_lock_changed"
+            | "issue_retry_hourly_budget";
           issueId: string | null;
           details: Record<string, unknown>;
         };
@@ -15947,6 +15954,32 @@ export function heartbeatService(
               outcome: "not_scheduled", issueId, errorCode: "issue_execution_lock_changed",
               reason: "Subscription retry suppressed because the task execution lock changed",
               details: { issueId, expectedExecutionRunId: run.id, currentExecutionRunId: lockedIssue?.executionRunId ?? null },
+            };
+          }
+        }
+
+        if (issueId) {
+          const chainsThisHour = await countIssueRetryChainsSince(tx, {
+            companyId: run.companyId,
+            agentId: run.agentId,
+            issueId,
+            since: new Date(now.getTime() - ISSUE_RETRY_HOURLY_BUDGET_WINDOW_MS),
+            excludeRunId: run.id,
+          });
+          if (chainsThisHour >= ISSUE_RETRY_HOURLY_BUDGET_MAX_CHAINS) {
+            return {
+              outcome: "not_scheduled",
+              reason: `Hourly retry budget for this task is spent (${chainsThisHour}/${ISSUE_RETRY_HOURLY_BUDGET_MAX_CHAINS} retries in the last hour); no further automatic retry will be queued`,
+              errorCode: "issue_retry_hourly_budget",
+              issueId,
+              details: {
+                issueId,
+                agentId: run.agentId,
+                retryReason,
+                chainsThisHour,
+                maxChains: ISSUE_RETRY_HOURLY_BUDGET_MAX_CHAINS,
+                budgetReason: ISSUE_RETRY_HOURLY_BUDGET_REASON,
+              },
             };
           }
         }
@@ -27536,6 +27569,7 @@ export function heartbeatService(
             }
           }
           let automaticParentRunId: string | null = null;
+          let continuationRetryParentRunId: string | null = null;
           if (
             source === "automation" &&
             opts.requestedByActorType === "system"
@@ -27553,11 +27587,13 @@ export function heartbeatService(
               nativeParent.kind === "parent"
                 ? nativeParent.runId
                 : genericParent;
+            continuationRetryParentRunId = genericParent;
             if (automaticParentRunId) {
               const [parent] = await tx
                 .select({
                   agentId: heartbeatRuns.agentId,
                   context: heartbeatRuns.contextSnapshot,
+                  status: heartbeatRuns.status,
                 })
                 .from(heartbeatRuns)
                 .where(
@@ -27574,6 +27610,45 @@ export function heartbeatService(
                 parent.agentId !== agentId
               )
                 automaticParentRunId = null;
+              if (
+                issueId &&
+                automaticParentRunId &&
+                continuationRetryParentRunId &&
+                parent &&
+                (parent.status === "failed" ||
+                  parent.status === "cancelled" ||
+                  parent.status === "timed_out")
+              ) {
+                const chainsThisHour = await countIssueRetryChainsSince(tx, {
+                  companyId: agent.companyId,
+                  agentId,
+                  issueId,
+                  since: new Date(Date.now() - ISSUE_RETRY_HOURLY_BUDGET_WINDOW_MS),
+                });
+                if (chainsThisHour >= ISSUE_RETRY_HOURLY_BUDGET_MAX_CHAINS) {
+                  await tx
+                    .insert(agentWakeupRequests)
+                    .values({
+                      companyId: agent.companyId,
+                      agentId,
+                      source,
+                      triggerDetail,
+                      reason: ISSUE_RETRY_HOURLY_BUDGET_REASON,
+                      payload: {
+                        issueId,
+                        retryOfRunId: continuationRetryParentRunId,
+                        chainsThisHour,
+                        maxChains: ISSUE_RETRY_HOURLY_BUDGET_MAX_CHAINS,
+                      },
+                      status: "skipped",
+                      requestedByActorType: "system",
+                      requestedByActorId: opts.requestedByActorId ?? null,
+                      idempotencyKey: opts.idempotencyKey ?? null,
+                      finishedAt: new Date(),
+                    });
+                  return { kind: "skipped" as const };
+                }
+              }
             }
             const proof =
               nativeParent.kind === "unresolved"
