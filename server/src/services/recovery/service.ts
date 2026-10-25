@@ -1393,7 +1393,9 @@ export function recoveryService(
     if (issue.monitorNextCheckAt) return true;
     if (
       issue.status === "in_progress" &&
-      latestRun?.status === "succeeded" &&
+      // "Is the work done?" — a lease-cancelled run delivered its work, so it
+      // can own a durable wait path just like a succeeded run (HIS-3613).
+      isRunSucceededForRecovery(latestRun) &&
       latestRun.agentId === issue.assigneeAgentId &&
       (await hasCommittedNativeBoardResponseWait(db, {
         companyId: issue.companyId,
@@ -1411,7 +1413,9 @@ export function recoveryService(
     // board/internal run on the same issue retains normal recovery semantics.
     if (
       issue.status === "in_progress" &&
-      latestRun?.status === "succeeded" &&
+      // Same question here: the chat turn was delivered even if the controller
+      // cancelled the run afterwards (HIS-3613).
+      isRunSucceededForRecovery(latestRun) &&
       isExternalChatPresentationContext(latestRun.contextSnapshot)
     ) {
       const activeConversation = await db
@@ -4470,7 +4474,9 @@ export function recoveryService(
       }
       if (issue.conversationAgentId) {
         const lastRun = await getLatestIssueRun(issue.companyId, issue.id);
-        if (lastRun?.status === "succeeded") {
+        // The conversation turn itself was produced; a lease cancellation after
+        // the adapter finished must not leave the turn unsettled (HIS-3613).
+        if (isRunSucceededForRecovery(lastRun)) {
           if (await settleConversationTurn(db, (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, lastRun.id)))[0]!)) {
             const [current] = await db.select().from(issues).where(eq(issues.id, issue.id));
             if (current) Object.assign(issue, current);
@@ -4798,7 +4804,9 @@ export function recoveryService(
         continue;
       }
       if (
-        latestRun?.status === "succeeded" &&
+        // Work delivered, waiting on a real path: not stranded, so do not
+        // escalate a lease-cancelled run either (HIS-3613).
+        isRunSucceededForRecovery(latestRun) &&
         (await hasPersistedDurableWaitPath(issue, latestRun))
       ) {
         result.skipped += 1;
@@ -5260,7 +5268,9 @@ export function recoveryService(
         }
 
         if (
-          latestRun.status === "succeeded" &&
+          // The run did its work on this assignment; a controller-side lease
+          // cancellation is not a reason to dispatch it again (HIS-3613).
+          isRunSucceededForRecovery(latestRun) &&
           !(await wasTodoHandedBackDuringOrAfterLatestRun(issue, latestRun))
         ) {
           result.skipped += 1;

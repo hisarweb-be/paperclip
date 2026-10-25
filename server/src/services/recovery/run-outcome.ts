@@ -4,11 +4,14 @@
  */
 export const LEASE_CANCELLATION_ERROR_CODE = "cancelled_controller_lease_lost";
 
-export type RecoveryOutcomeRun = {
-  status: string;
-  errorCode?: string | null;
-  resultJson?: unknown;
-} | null;
+export type RecoveryOutcomeRun =
+  | {
+      status: string;
+      errorCode?: string | null;
+      resultJson?: unknown;
+    }
+  | null
+  | undefined;
 
 function readResultJsonField(resultJson: unknown, key: string): unknown {
   if (!resultJson || typeof resultJson !== "object" || Array.isArray(resultJson)) {
