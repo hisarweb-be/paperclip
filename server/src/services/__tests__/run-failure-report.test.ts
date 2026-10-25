@@ -280,6 +280,16 @@ describeEmbeddedPostgres("reportRunFailure", () => {
     } }));
     expect(mockCaptureRunFailure).not.toHaveBeenCalled();
   });
+  it.each([
+    ["the error code", { errorCode: "cancelled_controller_lease_lost" }],
+    ["the result payload", { resultJson: { leaseCancellation: { controllerBootId: "boot" } } }],
+  ])("does not report a lease-cancelled run as a failure, identified by %s", async (_label, overrides) => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, buildRun({
+      status: "cancelled", startedAt: new Date(0), finishedAt: new Date(1000), ...overrides,
+    }));
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
 
   it("sends agents.adapterType from the loaded agent row", async () => {
     await seedCompanyAndAgent({ adapterType: "claude_managed" });
