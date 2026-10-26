@@ -5229,6 +5229,31 @@ export function issueRoutes(
     return decision.allowed;
   }
 
+  // A run lock only exists while a run can still write. An issue left in
+  // in_progress by a run that fell away (never terminalized, or already
+  // terminal) must not freeze the task for every writer but its assignee.
+  async function hasLiveRunLock(
+    issue: { checkoutRunId?: string | null; executionRunId?: string | null },
+  ) {
+    const runIds = [...new Set(
+      [issue.checkoutRunId, issue.executionRunId].filter(
+        (id): id is string => !!id,
+      ),
+    )];
+    for (const runId of runIds) {
+      const run = await heartbeat.getRun(runId);
+      if (
+        run &&
+        REASSIGNMENT_HOLD_RUN_STATUSES.includes(
+          run.status as (typeof REASSIGNMENT_HOLD_RUN_STATUSES)[number],
+        )
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   async function assertAgentIssueMutationAllowed(
     req: Request,
     res: Response,
@@ -5240,6 +5265,8 @@ export function issueRoutes(
       status: string;
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
+      checkoutRunId?: string | null;
+      executionRunId?: string | null;
       reviewPolicy?: IssueReviewPolicy | null;
       /** Used only to name the task in denial copy (plan §6). */
       identifier?: string | null;
@@ -5312,6 +5339,10 @@ export function issueRoutes(
       if (issue.status === "in_progress") {
         // Run/checkout ownership stays assignee-scoped even though writes are
         // open, so this lock clears on its own — the copy routes to comments.
+        // Only a live run holds it: a board left in_progress by a run that
+        // fell away stays writable, or the task is frozen for everyone but a
+        // sleeping assignee.
+        if (!(await hasLiveRunLock(issue))) return true;
         return denyIssueWrite(
           req,
           res,
