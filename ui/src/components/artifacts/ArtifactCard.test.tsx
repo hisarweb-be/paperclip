@@ -85,7 +85,9 @@ describe("ArtifactCard", () => {
 
   it("falls back to the update time and a placeholder name", () => {
     const markup = renderToStaticMarkup(
-      <ArtifactCard artifact={makeArtifact({ title: "", createdByAgent: null })} />,
+      <ArtifactCard
+        artifact={makeArtifact({ title: "", createdByAgent: null, createdAt: null })}
+      />,
     );
     expect(markup).toContain("Zonder titel");
     expect(markup).toContain("Bewerkt 1 jun 12:00");
