@@ -100,6 +100,7 @@ function sampleArtifact(overrides: Record<string, unknown> = {}): CompanyArtifac
     issue: { id: "issue-1", identifier: "PAP-42", title: "Ship launch" },
     project: null,
     createdByAgent: null,
+    createdAt: "2026-06-01T00:00:00.000Z",
     updatedAt: "2026-06-01T00:00:00.000Z",
     href: "/PAP/issues/PAP-42#document-brief",
     ...overrides,

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const COMPANY_ARTIFACTS_DEFAULT_LIMIT = 30;
+export const COMPANY_ARTIFACTS_DEFAULT_LIMIT = 50;
 export const COMPANY_ARTIFACTS_MAX_LIMIT = 100;
 export const COMPANY_ARTIFACTS_MAX_QUERY_LENGTH = 160;
 
@@ -9,6 +9,8 @@ export const companyArtifactSourceSchema = z.enum(["document", "attachment", "wo
 export const companyArtifactMediaKindSchema = z.enum(["image", "video", "text", "document", "file", "empty"]);
 
 export const companyArtifactGroupBySchema = z.enum(["none", "task", "parent_task"]);
+
+export const companyArtifactSortSchema = z.enum(["createdAt:desc", "createdAt:asc"]);
 
 export const companyArtifactsQuerySchema = z.object({
   kind: z.enum(["image", "video", "text", "document", "file", "all"]).optional().default("all"),
@@ -20,6 +22,7 @@ export const companyArtifactsQuerySchema = z.object({
     (value) => value === "true" ? true : value === "false" ? false : value,
     z.boolean(),
   ).optional().default(false),
+  sort: companyArtifactSortSchema.optional().default("createdAt:desc"),
   limit: z.coerce
     .number()
     .int()
@@ -53,8 +56,20 @@ export const companyArtifactSchema = z.object({
     id: z.string().guid(),
     name: z.string(),
   }).nullable(),
+  createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
   href: z.string().min(1),
+  byteSize: z.number().int().nonnegative().nullable(),
+  originalFilename: z.string().nullable(),
+  summary: z.string().nullable(),
+  status: z.string().nullable(),
+  reviewState: z.string().nullable(),
+  healthStatus: z.string().nullable(),
+  isPrimary: z.boolean().nullable(),
+  provider: z.string().nullable(),
+  createdByRunId: z.string().guid().nullable(),
+  issueId: z.string().guid(),
+  projectId: z.string().guid().nullable(),
 });
 
 export const companyArtifactGroupSchema = z.object({
@@ -69,6 +84,7 @@ export const companyArtifactGroupSchema = z.object({
   count: z.number().int().min(0),
   mediaKinds: z.array(companyArtifactMediaKindSchema),
   previewArtifacts: z.array(companyArtifactSchema),
+  createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
   href: z.string().min(1),
 });

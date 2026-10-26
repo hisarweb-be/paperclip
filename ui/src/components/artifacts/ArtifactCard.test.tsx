@@ -45,6 +45,7 @@ function makeArtifact(overrides: Record<string, unknown> = {}): CompanyArtifact 
     issue: { id: "issue-1", identifier: "PAP-10306", title: "Landing visuals" },
     project: { id: "proj-1", name: "Paperclip App" },
     createdByAgent: { id: "agent-1", name: "ClaudeCoder" },
+    createdAt: LOCAL_NOON_2026_06_01,
     updatedAt: LOCAL_NOON_2026_06_01,
     href: "/issues/PAP-10306#attachment-art-1",
     ...overrides,
@@ -84,7 +85,9 @@ describe("ArtifactCard", () => {
 
   it("falls back to the update time and a placeholder name", () => {
     const markup = renderToStaticMarkup(
-      <ArtifactCard artifact={makeArtifact({ title: "", createdByAgent: null })} />,
+      <ArtifactCard
+        artifact={makeArtifact({ title: "", createdByAgent: null, createdAt: null })}
+      />,
     );
     expect(markup).toContain("Zonder titel");
     expect(markup).toContain("Bewerkt 1 jun 12:00");
