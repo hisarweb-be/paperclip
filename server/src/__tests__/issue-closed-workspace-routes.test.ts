@@ -15,6 +15,7 @@ const REOPEN_PENDING_WAIT_TIMEOUT_MS = 5_000;
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  listBlockerAttention: vi.fn(async () => new Map()),
   update: vi.fn(),
   checkout: vi.fn(),
   addComment: vi.fn(),
