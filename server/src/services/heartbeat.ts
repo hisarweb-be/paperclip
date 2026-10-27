@@ -11794,7 +11794,10 @@ export function heartbeatService(
                 : {}),
             },
           );
-          if (scheduled.outcome === "not_scheduled")
+          if (
+            scheduled.outcome === "not_scheduled" ||
+            scheduled.outcome === "retry_exhausted"
+          )
             throw conflict(scheduled.reason);
         }
       } else
@@ -15680,9 +15683,15 @@ export function heartbeatService(
             | "issue_cancelled"
             | "issue_terminal_status"
             | "issue_not_in_progress"
-            | "issue_execution_lock_changed"
-            | "issue_retry_hourly_budget";
+            | "issue_execution_lock_changed";
           issueId: string | null;
+          details: Record<string, unknown>;
+        }
+      | {
+          outcome: "retry_exhausted";
+          reason: string;
+          errorCode: "issue_retry_hourly_budget";
+          issueId: string;
           details: Record<string, unknown>;
         };
 
@@ -15964,11 +15973,10 @@ export function heartbeatService(
             agentId: run.agentId,
             issueId,
             since: new Date(now.getTime() - ISSUE_RETRY_HOURLY_BUDGET_WINDOW_MS),
-            excludeRunId: run.id,
           });
           if (chainsThisHour >= ISSUE_RETRY_HOURLY_BUDGET_MAX_CHAINS) {
             return {
-              outcome: "not_scheduled",
+              outcome: "retry_exhausted",
               reason: `Hourly retry budget for this task is spent (${chainsThisHour}/${ISSUE_RETRY_HOURLY_BUDGET_MAX_CHAINS} retries in the last hour); no further automatic retry will be queued`,
               errorCode: "issue_retry_hourly_budget",
               issueId,
@@ -16193,6 +16201,29 @@ export function heartbeatService(
         };
       },
     );
+
+    if (scheduleResult.outcome === "retry_exhausted") {
+      const hourlyExhaustion = {
+        retryReason,
+        scheduledRetryAttempt: consumedAttempts,
+        maxAttempts,
+        ...scheduleResult.details,
+      };
+      await appendRunEvent(run, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: scheduleResult.reason,
+        payload: hourlyExhaustion,
+        retryExhaustion: hourlyExhaustion,
+      });
+      return {
+        outcome: "retry_exhausted" as const,
+        reason: scheduleResult.reason,
+        errorCode: "issue_retry_hourly_budget" as const,
+        issueId: scheduleResult.issueId,
+      };
+    }
 
     if (scheduleResult.outcome === "not_scheduled") {
       await appendRunEvent(run, {

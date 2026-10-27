@@ -37,7 +37,6 @@ export async function countIssueRetryChainsSince(
     agentId: string;
     issueId: string;
     since: Date;
-    excludeRunId?: string | null;
   },
 ): Promise<number> {
   const rows = await executor.execute(sql`
@@ -46,7 +45,7 @@ export async function countIssueRetryChainsSince(
     join heartbeat_runs predecessor on predecessor.id = retry.retry_of_run_id
     where retry.company_id = ${input.companyId}
       and retry.agent_id = ${input.agentId}
-      and retry.created_at >= ${input.since}
+      and retry.created_at >= ${input.since.toISOString()}::timestamptz
       and coalesce(
         retry.context_snapshot ->> 'issueId',
         retry.context_snapshot ->> 'taskId'
@@ -59,7 +58,6 @@ export async function countIssueRetryChainsSince(
         STRANDED_PREDECESSOR_STATUSES.map((status) => sql`${status}`),
         sql`, `,
       )})
-      ${input.excludeRunId ? sql`and retry.id <> ${input.excludeRunId}` : sql``}
   `);
   const value = firstRow(rows)?.chains;
   return typeof value === "number" && Number.isFinite(value) ? value : Number(value ?? 0) || 0;
