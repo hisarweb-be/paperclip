@@ -11796,7 +11796,8 @@ export function heartbeatService(
           );
           if (
             scheduled.outcome === "not_scheduled" ||
-            scheduled.outcome === "retry_exhausted"
+            (scheduled.outcome === "retry_exhausted" &&
+              scheduled.errorCode === "issue_retry_hourly_budget")
           )
             throw conflict(scheduled.reason);
         }
