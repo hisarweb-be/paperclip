@@ -1945,7 +1945,7 @@ export function recoveryService(
     // same task). Same window as the A1 gate, so the two never disagree.
     if (
       await hasLiveScheduledRetry(db, {
-        companyId: input.companyId,
+        companyId: input.companyId ?? undefined,
         agentId: input.agentId,
         issueId: input.issueId,
       })
@@ -4728,7 +4728,6 @@ export function recoveryService(
           await readChatControlRecoveryStop(db, {
             companyId: issue.companyId,
             issueId: issue.id,
-            companyId: issue.companyId,
             agentId,
             sourceRunId: executionRecoverySource.id,
           })
