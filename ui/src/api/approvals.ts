@@ -11,8 +11,10 @@ export const approvalsApi = {
   get: (id: string) => api.get<Approval>(`/approvals/${id}`),
   approve: (id: string, decisionNote?: string) =>
     api.post<Approval>(`/approvals/${id}/approve`, { decisionNote }),
-  reject: (id: string, decisionNote?: string) =>
+  reject: (id: string, decisionNote: string) =>
     api.post<Approval>(`/approvals/${id}/reject`, { decisionNote }),
+  reopen: (id: string, reason: string) =>
+    api.post<Approval>(`/approvals/${id}/reopen`, { reason }),
   requestRevision: (id: string, decisionNote?: string) =>
     api.post<Approval>(`/approvals/${id}/request-revision`, { decisionNote }),
   resubmit: (id: string, payload?: Record<string, unknown>) =>
@@ -20,5 +22,7 @@ export const approvalsApi = {
   listComments: (id: string) => api.get<ApprovalComment[]>(`/approvals/${id}/comments`),
   addComment: (id: string, body: string) =>
     api.post<ApprovalComment>(`/approvals/${id}/comments`, { body }),
+  deleteComment: (id: string, commentId: string) =>
+    api.delete<ApprovalComment>(`/approvals/${id}/comments/${commentId}`),
   listIssues: (id: string) => api.get<Issue[]>(`/approvals/${id}/issues`),
 };

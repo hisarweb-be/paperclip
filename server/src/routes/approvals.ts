@@ -4,6 +4,8 @@ import { heartbeatRuns, type Db } from "@paperclipai/db";
 import {
   addApprovalCommentSchema,
   createApprovalSchema,
+  rejectApprovalSchema,
+  reopenApprovalSchema,
   requestApprovalRevisionSchema,
   resolveApprovalSchema,
   resubmitApprovalSchema,
@@ -399,7 +401,7 @@ export function approvalRoutes(
     res.json(redactApprovalPayload(approval));
   });
 
-  router.post("/approvals/:id/reject", validate(resolveApprovalSchema), async (req, res) => {
+  router.post("/approvals/:id/reject", validate(rejectApprovalSchema), async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
     if (!(await requireApprovalAccess(req, id))) {
@@ -419,7 +421,7 @@ export function approvalRoutes(
         action: "approval.rejected",
         entityType: "approval",
         entityId: approval.id,
-        details: { type: approval.type },
+        details: { type: approval.type, decisionNote: approval.decisionNote },
       });
       await queueAdditionalApprovalReviewPathWakes({
         approvalId: approval.id,
@@ -430,6 +432,45 @@ export function approvalRoutes(
         requestedByUserId: req.actor.userId ?? "board",
       });
     }
+
+    res.json(redactApprovalPayload(approval));
+  });
+
+  /**
+   * Take back a rejection. The approval returns to the queue as `pending` and
+   * both sides of the decision are recorded, so an unjustified rejection stays
+   * visible in the activity log instead of silently disappearing.
+   */
+  router.post("/approvals/:id/reopen", validate(reopenApprovalSchema), async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    if (!(await requireApprovalAccess(req, id))) {
+      res.status(404).json({ error: "Approval not found" });
+      return;
+    }
+
+    const { approval, applied, previous } = await svc.reopen(id);
+    if (!applied) {
+      res.status(409).json({ error: "Approval is not rejected" });
+      return;
+    }
+
+    await logActivity(db, {
+      companyId: approval.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "approval.reopened",
+      entityType: "approval",
+      entityId: approval.id,
+      details: {
+        type: approval.type,
+        reason: req.body.reason,
+        reopenedFrom: "rejected",
+        previousDecisionNote: previous.decisionNote,
+        previousDecidedByUserId: previous.decidedByUserId,
+        previousDecidedAt: previous.decidedAt,
+      },
+    });
 
     res.json(redactApprovalPayload(approval));
   });
@@ -527,6 +568,65 @@ export function approvalRoutes(
     });
 
     res.status(201).json(comment);
+  });
+
+  /**
+   * Remove an approval comment. The row is tombstoned rather than dropped: the
+   * author keeps ownership of the removal and the decision thread keeps an
+   * auditable record that a comment was placed and later removed.
+   */
+  router.delete("/approvals/:id/comments/:commentId", async (req, res) => {
+    const id = req.params.id as string;
+    const commentId = req.params.commentId as string;
+    const approval = await getAccessibleResource(req, res, svc.getById(id), "Approval not found");
+    if (!approval) return;
+    if (!(await assertApprovalMutationAllowedByRunContext(req, res, approval.companyId))) return;
+
+    const comment = await svc.getComment(commentId);
+    if (!comment || comment.approvalId !== id) {
+      res.status(404).json({ error: "Comment not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const actorOwnsComment =
+      actor.actorType === "agent"
+        ? comment.authorAgentId === actor.agentId
+        : comment.authorUserId === actor.actorId;
+    if (!actorOwnsComment) {
+      res.status(403).json({ error: "Only the comment author can delete comments" });
+      return;
+    }
+
+    if (comment.deletedAt) {
+      res.json(comment);
+      return;
+    }
+
+    const deleted = await svc.tombstoneComment(commentId, {
+      actorType: actor.actorType,
+      agentId: actor.agentId,
+      userId: actor.actorType === "user" ? actor.actorId : null,
+    });
+    if (!deleted) {
+      res.status(409).json({ error: "Comment was already removed" });
+      return;
+    }
+
+    await logActivity(db, {
+      companyId: approval.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action: "approval.comment_deleted",
+      entityType: "approval",
+      entityId: approval.id,
+      details: { commentId: deleted.id, mode: "tombstone" },
+    });
+
+    res.json(deleted);
   });
 
   return router;

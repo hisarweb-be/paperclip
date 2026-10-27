@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams, useSearchParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { approvalsApi } from "../api/approvals";
 import { agentsApi } from "../api/agents";
+import { authApi } from "../api/auth";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -13,7 +14,17 @@ import { approvalLabel, typeIcon, defaultTypeIcon, ApprovalPayloadRenderer } fro
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { CheckCircle2, ChevronRight, Sparkles } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { CheckCircle2, ChevronRight, Sparkles, Trash2 } from "lucide-react";
 import type { ApprovalComment } from "@paperclipai/shared";
 import { MarkdownBody } from "../components/MarkdownBody";
 
@@ -27,6 +38,10 @@ export function ApprovalDetail() {
   const [commentBody, setCommentBody] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [showRawPayload, setShowRawPayload] = useState(false);
+  const [rejectOpen, setRejectOpen] = useState(false);
+  const [rejectReason, setRejectReason] = useState("");
+  const [reopenOpen, setReopenOpen] = useState(false);
+  const [reopenReason, setReopenReason] = useState("");
 
   const { data: approval, isLoading } = useQuery({
     queryKey: queryKeys.approvals.detail(approvalId!),
@@ -34,6 +49,12 @@ export function ApprovalDetail() {
     enabled: !!approvalId,
   });
   const resolvedCompanyId = approval?.companyId ?? selectedCompanyId;
+
+  const { data: session } = useQuery({
+    queryKey: queryKeys.auth.session,
+    queryFn: () => authApi.getSession(),
+  });
+  const currentUserId = session?.user.id ?? session?.session.userId ?? null;
 
   const { data: comments } = useQuery({
     queryKey: queryKeys.approvals.comments(approvalId!),
@@ -96,12 +117,34 @@ export function ApprovalDetail() {
   });
 
   const rejectMutation = useMutation({
-    mutationFn: () => approvalsApi.reject(approvalId!),
+    mutationFn: (reason: string) => approvalsApi.reject(approvalId!, reason),
+    onSuccess: () => {
+      setError(null);
+      setRejectOpen(false);
+      setRejectReason("");
+      refresh();
+    },
+    onError: (err) => setError(err instanceof Error ? err.message : "Reject failed"),
+  });
+
+  const reopenMutation = useMutation({
+    mutationFn: (reason: string) => approvalsApi.reopen(approvalId!, reason),
+    onSuccess: () => {
+      setError(null);
+      setReopenOpen(false);
+      setReopenReason("");
+      refresh();
+    },
+    onError: (err) => setError(err instanceof Error ? err.message : "Reopen failed"),
+  });
+
+  const deleteCommentMutation = useMutation({
+    mutationFn: (commentId: string) => approvalsApi.deleteComment(approvalId!, commentId),
     onSuccess: () => {
       setError(null);
       refresh();
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Reject failed"),
+    onError: (err) => setError(err instanceof Error ? err.message : "Delete comment failed"),
   });
 
   const revisionMutation = useMutation({
@@ -275,12 +318,22 @@ export function ApprovalDetail() {
               <Button
                 variant="destructive"
                 size="sm"
-                onClick={() => rejectMutation.mutate()}
+                onClick={() => setRejectOpen(true)}
                 disabled={rejectMutation.isPending}
               >
                 Reject
               </Button>
             </>
+          )}
+          {approval.status === "rejected" && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setReopenOpen(true)}
+              disabled={reopenMutation.isPending}
+            >
+              Reopen
+            </Button>
           )}
           {isBudgetApproval && approval.status === "pending" && (
             <p className="text-sm text-muted-foreground">
@@ -345,6 +398,20 @@ export function ApprovalDetail() {
                 </span>
               </div>
               <MarkdownBody className="text-sm">{comment.body}</MarkdownBody>
+              {!comment.deletedAt && comment.authorUserId && comment.authorUserId === currentUserId && (
+                <div className="mt-2 flex justify-end">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-muted-foreground hover:text-destructive"
+                    onClick={() => deleteCommentMutation.mutate(comment.id)}
+                    disabled={deleteCommentMutation.isPending}
+                  >
+                    <Trash2 className="mr-1 h-3.5 w-3.5" />
+                    Delete
+                  </Button>
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -364,6 +431,86 @@ export function ApprovalDetail() {
           </Button>
         </div>
       </div>
+
+      {/* Rejecting takes the card out of the queue and cannot be repeated, so the
+          reason is captured here instead of firing the decision straight away. */}
+      <AlertDialog
+        open={rejectOpen}
+        onOpenChange={(open) => {
+          if (!open && !rejectMutation.isPending) {
+            setRejectOpen(false);
+            setRejectReason("");
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Reject this approval?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Rejecting removes this card from the queue. A reason is required and is
+              kept with the decision.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <Textarea
+            value={rejectReason}
+            onChange={(e) => setRejectReason(e.target.value)}
+            placeholder="Why is this rejected?"
+            rows={3}
+          />
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={rejectMutation.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={!rejectReason.trim() || rejectMutation.isPending}
+              onClick={(event) => {
+                event.preventDefault();
+                rejectMutation.mutate(rejectReason.trim());
+              }}
+            >
+              Reject
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* The back-out for a rejection that should not have happened. */}
+      <AlertDialog
+        open={reopenOpen}
+        onOpenChange={(open) => {
+          if (!open && !reopenMutation.isPending) {
+            setReopenOpen(false);
+            setReopenReason("");
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Put this approval back in the queue?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The card returns to the queue as pending. Both the rejection and this
+              restore stay in the decision thread.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <Textarea
+            value={reopenReason}
+            onChange={(e) => setReopenReason(e.target.value)}
+            placeholder="Why is this rejection taken back?"
+            rows={3}
+          />
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={reopenMutation.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={!reopenReason.trim() || reopenMutation.isPending}
+              onClick={(event) => {
+                event.preventDefault();
+                reopenMutation.mutate(reopenReason.trim());
+              }}
+            >
+              Reopen
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

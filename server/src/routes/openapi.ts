@@ -115,6 +115,8 @@ import {
   // Approval
   createApprovalSchema,
   resolveApprovalSchema,
+  rejectApprovalSchema,
+  reopenApprovalSchema,
   requestApprovalRevisionSchema,
   resubmitApprovalSchema,
   addApprovalCommentSchema,
@@ -5198,9 +5200,21 @@ registry.registerPath({
   summary: "Reject an approval",
   request: {
     params: z.object({ id: z.string() }),
-    body: jsonBody(resolveApprovalSchema),
+    body: jsonBody(rejectApprovalSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/approvals/{id}/reopen",
+  tags: ["approvals"],
+  summary: "Reopen a rejected approval",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(reopenApprovalSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 409: r.conflict },
 });
 
 registry.registerPath({
@@ -5246,6 +5260,24 @@ registry.registerPath({
     body: jsonBody(addApprovalCommentSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/approvals/{id}/comments/{commentId}",
+  tags: ["approvals"],
+  summary: "Delete an approval comment",
+  description:
+    "Tombstones a comment: the row, its author and its timestamp survive so the log stays honest, while the body is redacted. Only the author of the comment may delete it.",
+  request: {
+    params: z.object({ id: z.string(), commentId: z.string() }),
+  },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
 });
 
 // ─── Costs ───────────────────────────────────────────────────────────────────

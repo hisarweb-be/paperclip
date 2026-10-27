@@ -9,10 +9,13 @@ const mockApprovalService = vi.hoisted(() => ({
   create: vi.fn(),
   approve: vi.fn(),
   reject: vi.fn(),
+  reopen: vi.fn(),
   requestRevision: vi.fn(),
   resubmit: vi.fn(),
   listComments: vi.fn(),
   addComment: vi.fn(),
+  getComment: vi.fn(),
+  tombstoneComment: vi.fn(),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -118,10 +121,13 @@ describe("approval routes idempotent retries", () => {
     mockApprovalService.create.mockReset();
     mockApprovalService.approve.mockReset();
     mockApprovalService.reject.mockReset();
+    mockApprovalService.reopen.mockReset();
     mockApprovalService.requestRevision.mockReset();
     mockApprovalService.resubmit.mockReset();
     mockApprovalService.listComments.mockReset();
     mockApprovalService.addComment.mockReset();
+    mockApprovalService.getComment.mockReset();
+    mockApprovalService.tombstoneComment.mockReset();
     mockHeartbeatService.wakeup.mockReset();
     mockIssueApprovalService.listIssuesForApproval.mockReset();
     mockIssueApprovalService.linkManyForApproval.mockReset();
@@ -191,9 +197,220 @@ describe("approval routes idempotent retries", () => {
 
     const res = await request(await createApp())
       .post("/api/approvals/approval-1/reject")
-      .send({});
+      .send({ decisionNote: "Budget frozen" });
 
     expect(res.status).toBe(200);
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("refuses a rejection without a reason", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-1",
+      companyId: "company-1",
+      type: "hire_agent",
+      status: "pending",
+      payload: {},
+    });
+
+    const app = await createApp();
+    for (const body of [{}, { decisionNote: "" }, { decisionNote: "   " }]) {
+      const res = await request(app).post("/api/approvals/approval-1/reject").send(body);
+      expect(res.status, JSON.stringify(res.body)).toBe(400);
+    }
+    expect(mockApprovalService.reject).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("replays a reasoned rejection without a second decision or activity log", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-1",
+      companyId: "company-1",
+      type: "hire_agent",
+      status: "rejected",
+      payload: {},
+    });
+    mockApprovalService.reject.mockResolvedValue({
+      approval: {
+        id: "approval-1",
+        companyId: "company-1",
+        type: "hire_agent",
+        status: "rejected",
+        payload: {},
+        decisionNote: "Budget frozen",
+      },
+      applied: false,
+    });
+
+    const app = await createApp();
+    const first = await request(app)
+      .post("/api/approvals/approval-1/reject")
+      .send({ decisionNote: "Budget frozen" });
+    const replay = await request(app)
+      .post("/api/approvals/approval-1/reject")
+      .send({ decisionNote: "Budget frozen" });
+
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    expect(replay.status, JSON.stringify(replay.body)).toBe(200);
+    // The replay is answered from the stored decision, so no second rejection
+    // is applied and nothing is logged twice.
+    expect(mockApprovalService.reject).toHaveBeenCalledTimes(2);
+    expect(mockApprovalService.reject).toHaveBeenNthCalledWith(
+      1,
+      "approval-1",
+      "user-1",
+      "Budget frozen",
+    );
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("reopens a rejected approval and records both sides of the decision", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-9",
+      companyId: "company-1",
+      type: "hire_agent",
+      status: "rejected",
+      payload: {},
+    });
+    mockApprovalService.reopen.mockResolvedValue({
+      approval: {
+        id: "approval-9",
+        companyId: "company-1",
+        type: "hire_agent",
+        status: "pending",
+        payload: {},
+        decisionNote: null,
+        decidedByUserId: null,
+        decidedAt: null,
+      },
+      applied: true,
+      previous: {
+        id: "approval-9",
+        companyId: "company-1",
+        type: "hire_agent",
+        status: "rejected",
+        payload: {},
+        decisionNote: "Rejected by mistake",
+        decidedByUserId: "user-2",
+        decidedAt: new Date("2026-10-01T00:00:00.000Z"),
+      },
+    });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-9/reopen")
+      .send({ reason: "Rejection was a mistake" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.status).toBe("pending");
+    expect(mockApprovalService.reopen).toHaveBeenCalledWith("approval-9");
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId: "company-1",
+        action: "approval.reopened",
+        details: expect.objectContaining({
+          reason: "Rejection was a mistake",
+          reopenedFrom: "rejected",
+          previousDecisionNote: "Rejected by mistake",
+          previousDecidedByUserId: "user-2",
+        }),
+      }),
+    );
+  });
+
+  it("refuses to reopen without a reason and when the approval is not rejected", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-9",
+      companyId: "company-1",
+      type: "hire_agent",
+      status: "pending",
+      payload: {},
+    });
+
+    const app = await createApp();
+    const missingReason = await request(app)
+      .post("/api/approvals/approval-9/reopen")
+      .send({});
+    expect(missingReason.status, JSON.stringify(missingReason.body)).toBe(400);
+
+    mockApprovalService.reopen.mockResolvedValue({
+      approval: { id: "approval-9", companyId: "company-1", status: "pending", payload: {} },
+      applied: false,
+      previous: { id: "approval-9", companyId: "company-1", status: "pending", payload: {} },
+    });
+    const notRejected = await request(app)
+      .post("/api/approvals/approval-9/reopen")
+      .send({ reason: "Trying anyway" });
+    expect(notRejected.status, JSON.stringify(notRejected.body)).toBe(409);
+    expect(notRejected.body.error).toBe("Approval is not rejected");
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("lets the author tombstone their own approval comment", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-8",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+    });
+    mockApprovalService.getComment.mockResolvedValue({
+      id: "comment-1",
+      approvalId: "approval-8",
+      authorUserId: "user-1",
+      authorAgentId: null,
+      body: "probe",
+      deletedAt: null,
+    });
+    mockApprovalService.tombstoneComment.mockResolvedValue({
+      id: "comment-1",
+      approvalId: "approval-8",
+      authorUserId: "user-1",
+      body: "[verwijderd]",
+      deletedAt: new Date("2026-10-11T09:00:00.000Z"),
+    });
+
+    const res = await request(await createApp())
+      .delete("/api/approvals/approval-8/comments/comment-1");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.body).toBe("[verwijderd]");
+    expect(mockApprovalService.tombstoneComment).toHaveBeenCalledWith("comment-1", {
+      actorType: "user",
+      agentId: undefined,
+      userId: "user-1",
+    });
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "approval.comment_deleted",
+        details: { commentId: "comment-1", mode: "tombstone" },
+      }),
+    );
+  });
+
+  it("refuses to delete someone else's approval comment", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-8",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+    });
+    mockApprovalService.getComment.mockResolvedValue({
+      id: "comment-2",
+      approvalId: "approval-8",
+      authorUserId: "user-2",
+      authorAgentId: null,
+      body: "someone else's words",
+      deletedAt: null,
+    });
+
+    const res = await request(await createApp())
+      .delete("/api/approvals/approval-8/comments/comment-2");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Only the comment author can delete comments");
+    expect(mockApprovalService.tombstoneComment).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
 

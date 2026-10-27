@@ -192,9 +192,26 @@ const createRequestCheckboxConfirmationToolSchema = z.object({
 
 const approvalDecisionSchema = z.object({
   approvalId: approvalIdSchema,
-  action: z.enum(["approve", "reject", "requestRevision", "resubmit"]),
+  action: z.enum(["approve", "reject", "requestRevision", "resubmit", "reopen"]),
+  // Approving may carry an optional note; rejecting requires one (see superRefine).
   decisionNote: z.string().optional(),
+  reason: z.string().optional(),
   payloadJson: z.string().optional(),
+}).superRefine((value, ctx) => {
+  if (value.action === "reject" && !value.decisionNote?.trim()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["decisionNote"],
+      message: "Rejecting requires decisionNote",
+    });
+  }
+  if (value.action === "reopen" && !value.reason?.trim()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["reason"],
+      message: "Reopening requires reason",
+    });
+  }
 });
 
 const createApprovalToolSchema = z.object({
@@ -645,9 +662,9 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
     ),
     makeTool(
       "paperclipApprovalDecision",
-      "Approve, reject, request revision, or resubmit an approval",
+      "Approve, reject, request revision, resubmit, or reopen an approval",
       approvalDecisionSchema,
-      async ({ approvalId, action, decisionNote, payloadJson }) => {
+      async ({ approvalId, action, decisionNote, reason, payloadJson }) => {
         const path =
           action === "approve"
             ? `/approvals/${encodeURIComponent(approvalId)}/approve`
@@ -655,12 +672,18 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
               ? `/approvals/${encodeURIComponent(approvalId)}/reject`
               : action === "requestRevision"
                 ? `/approvals/${encodeURIComponent(approvalId)}/request-revision`
-                : `/approvals/${encodeURIComponent(approvalId)}/resubmit`;
+                : action === "reopen"
+                  ? `/approvals/${encodeURIComponent(approvalId)}/reopen`
+                  : `/approvals/${encodeURIComponent(approvalId)}/resubmit`;
 
         const body =
           action === "resubmit"
             ? { payload: parseOptionalJson(payloadJson) ?? {} }
-            : { decisionNote };
+            : action === "reopen"
+              ? { reason: reason?.trim() }
+              : action === "reject"
+                ? { decisionNote: decisionNote?.trim() }
+                : { decisionNote };
 
         return client.requestJson("POST", path, { body });
       },

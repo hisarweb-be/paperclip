@@ -12,6 +12,13 @@ export const approvalComments = pgTable(
     authorAgentId: uuid("author_agent_id").references(() => agents.id),
     authorUserId: text("author_user_id"),
     body: text("body").notNull(),
+    // Tombstone columns. Deleting an approval comment never removes the row:
+    // the body is redacted and the author/actor is kept, so the decision thread
+    // keeps its audit trail and a removal stays reversible in the record.
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    deletedByType: text("deleted_by_type").$type<"agent" | "user" | "board">(),
+    deletedByAgentId: uuid("deleted_by_agent_id").references(() => agents.id),
+    deletedByUserId: text("deleted_by_user_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

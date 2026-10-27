@@ -1,6 +1,8 @@
 import { Command } from "commander";
 import {
   createApprovalSchema,
+  rejectApprovalSchema,
+  reopenApprovalSchema,
   requestApprovalRevisionSchema,
   resolveApprovalSchema,
   resubmitApprovalSchema,
@@ -167,11 +169,31 @@ export function registerApprovalCommands(program: Command): void {
       .action(async (approvalId: string, opts: ApprovalDecisionOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = resolveApprovalSchema.parse({
+          // Rejecting requires a reason: state it or the CLI refuses locally
+          // instead of sending a rejection the server will turn down anyway.
+          const payload = rejectApprovalSchema.parse({
             decisionNote: opts.decisionNote,
-            decidedByUserId: opts.decidedByUserId,
           });
           const updated = await ctx.api.post<Approval>(apiPath`/api/approvals/${approvalId}/reject`, payload);
+          printOutput(updated, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    approval
+      .command("reopen")
+      .description("Put a rejected approval back in the queue")
+      .argument("<approvalId>", "Approval ID")
+      .option("--reason <text>", "Why the rejection is taken back")
+      .action(async (approvalId: string, opts: { reason?: string } & BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          // The reason is what makes a restore auditable, so it is required.
+          const payload = reopenApprovalSchema.parse({ reason: opts.reason });
+          const updated = await ctx.api.post<Approval>(apiPath`/api/approvals/${approvalId}/reopen`, payload);
           printOutput(updated, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);

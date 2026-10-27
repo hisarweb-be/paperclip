@@ -9,6 +9,12 @@ import { budgetService } from "./budgets.js";
 import { notifyHireApproved } from "./hire-hook.js";
 import { instanceSettingsService } from "./instance-settings.js";
 
+/**
+ * Body shown in place of a deleted approval comment. The row, its author and its
+ * timestamp survive so the decision thread keeps its audit trail.
+ */
+export const APPROVAL_COMMENT_DELETED_BODY = "[verwijderd]";
+
 export function approvalService(db: Db) {
   const agentsSvc = agentService(db);
   const budgets = budgetService(db);
@@ -17,8 +23,16 @@ export function approvalService(db: Db) {
   const resolvableStatuses = Array.from(canResolveStatuses);
   type ApprovalRecord = typeof approvals.$inferSelect;
   type ResolutionResult = { approval: ApprovalRecord; applied: boolean };
+  type ReopenResult = ResolutionResult & { previous: ApprovalRecord };
 
-  function redactApprovalComment<T extends { body: string }>(comment: T, censorUsernameInLogs: boolean): T {
+  function redactApprovalComment<
+    T extends { body: string; deletedAt?: Date | string | null },
+  >(comment: T, censorUsernameInLogs: boolean): T {
+    // A tombstoned comment keeps its row, its author and its timestamp, but not
+    // its text: the decision thread stays auditable without the removed content.
+    if (comment.deletedAt) {
+      return { ...comment, body: APPROVAL_COMMENT_DELETED_BODY };
+    }
     return {
       ...comment,
       body: redactCurrentUserText(comment.body, { enabled: censorUsernameInLogs }),
@@ -231,6 +245,43 @@ export function approvalService(db: Db) {
       return { approval: updated, applied };
     },
 
+    /**
+     * Restore a rejected approval to the queue. This is the back-out for a
+     * rejection that should not have happened; it is the only way an approval
+     * leaves `rejected`. Only `rejected` can be reopened, and a reopen is not a
+     * silent undo: the returned `previous` carries the rejection that is being
+     * taken back, so the route can record both sides of it.
+     */
+    reopen: async (id: string): Promise<ReopenResult> => {
+      const existing = await getExistingApproval(id);
+      if (existing.status !== "rejected") {
+        throw unprocessable("Only rejected approvals can be reopened");
+      }
+
+      const now = new Date();
+      const updated = await db
+        .update(approvals)
+        .set({
+          status: "pending",
+          decidedByUserId: null,
+          decisionNote: null,
+          decidedAt: null,
+          updatedAt: now,
+        })
+        .where(and(eq(approvals.id, id), eq(approvals.status, "rejected")))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+
+      if (updated) {
+        return { approval: updated, applied: true, previous: existing };
+      }
+
+      // Lost the race against another resolve/reopen: report the current state
+      // rather than pretending the reopen applied.
+      const latest = await getExistingApproval(id);
+      return { approval: latest, applied: false, previous: existing };
+    },
+
     requestRevision: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
       const existing = await getExistingApproval(id);
       if (existing.status !== "pending") {
@@ -311,6 +362,47 @@ export function approvalService(db: Db) {
         })
         .returning()
         .then((rows) => redactApprovalComment(rows[0], currentUserRedactionOptions.enabled));
+    },
+
+    getComment: (commentId: string) =>
+      db
+        .select()
+        .from(approvalComments)
+        .where(eq(approvalComments.id, commentId))
+        .then((rows) => rows[0] ?? null),
+
+    /**
+     * Remove an approval comment without destroying the record. The body is
+     * redacted and the deleting actor is written to the row; the row itself, its
+     * author and its timestamp stay, so the decision thread remains auditable.
+     */
+    tombstoneComment: async (
+      commentId: string,
+      actor: {
+        actorType: "agent" | "user" | "board";
+        agentId?: string | null;
+        userId?: string | null;
+      },
+    ) => {
+      const currentUserRedactionOptions = {
+        enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
+      };
+      const now = new Date();
+      return db
+        .update(approvalComments)
+        .set({
+          body: APPROVAL_COMMENT_DELETED_BODY,
+          deletedAt: now,
+          deletedByType: actor.actorType,
+          deletedByAgentId: actor.agentId ?? null,
+          deletedByUserId: actor.userId ?? null,
+          updatedAt: now,
+        })
+        .where(and(eq(approvalComments.id, commentId), sql`${approvalComments.deletedAt} is null`))
+        .returning()
+        .then((rows) =>
+          rows[0] ? redactApprovalComment(rows[0], currentUserRedactionOptions.enabled) : null,
+        );
     },
   };
 }

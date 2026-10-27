@@ -22,6 +22,11 @@ export interface ApprovalComment {
   authorAgentId: string | null;
   authorUserId: string | null;
   body: string;
+  /** Set when the comment was removed; `body` then holds the tombstone marker. */
+  deletedAt: Date | null;
+  deletedByType: "agent" | "user" | "board" | null;
+  deletedByAgentId: string | null;
+  deletedByUserId: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
