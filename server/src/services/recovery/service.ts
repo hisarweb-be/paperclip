@@ -13,6 +13,7 @@ import {
   type RoutineExecutionRunnerResolution,
 } from "../routine-execution-binding.js";
 import { hasLiveLegacyController } from "../legacy-controller-lease.js";
+import { hasLiveScheduledRetry } from "../issue-retry-budget.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { isWaitingConversation, settleConversationTurn, deliverConversationComments } from "../agent-conversations.js";
 import {
@@ -1930,6 +1931,18 @@ export function recoveryService(
      */
     outcome?: { retryExhausted?: boolean };
   }) {
+    // HIS-4581 (B): a live `scheduled_retry` on this task is already the
+    // successor. Stacking a second wake on top reopens the chain the measured
+    // HIS-3686 history shows (10 of 24 retry runs started a fresh chain in the
+    // same task). Same window as the A1 gate, so the two never disagree.
+    if (
+      await hasLiveScheduledRetry(db, {
+        agentId: input.agentId,
+        issueId: input.issueId,
+      })
+    ) {
+      return null;
+    }
     if (input.retryOfRunId) {
       const [predecessor] = await db
         .select()
