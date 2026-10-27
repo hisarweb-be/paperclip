@@ -1928,8 +1928,15 @@ export function recoveryService(
      * because the failed predecessor has spent its bounded transient retry
      * budget. A null return without it means another authority owns the
      * run (native runtime, reconciliation) and the caller must leave it.
+     *
+     * `retryPending` is the opposite signal (HIS-4581 B): a live
+     * `scheduled_retry` on this task is already the successor, so this call
+     * queued nothing on purpose. A caller that would otherwise escalate on a
+     * null must count it as skipped instead; escalating here would block a
+     * task whose retry is still waiting, which is exactly the interference
+     * between the two gates that this change must prevent.
      */
-    outcome?: { retryExhausted?: boolean };
+    outcome?: { retryExhausted?: boolean; retryPending?: boolean };
   }) {
     // HIS-4581 (B): a live `scheduled_retry` on this task is already the
     // successor. Stacking a second wake on top reopens the chain the measured
@@ -1941,6 +1948,7 @@ export function recoveryService(
         issueId: input.issueId,
       })
     ) {
+      if (input.outcome) input.outcome.retryPending = true;
       return null;
     }
     if (input.retryOfRunId) {
@@ -5412,6 +5420,7 @@ export function recoveryService(
             result.skipped += 1;
             continue;
           }
+          const handoffOutcome: { retryExhausted?: boolean; retryPending?: boolean } = {};
           const retried = await enqueueStrandedIssueRecovery({
             issueId: issue.id,
             agentId,
@@ -5419,10 +5428,18 @@ export function recoveryService(
             retryReason: "issue_continuation_needed",
             source: "issue.successful_run_handoff_interrupted_retry",
             retryOfRunId: latestRun.id,
+            outcome: handoffOutcome,
           });
           if (retried) {
             result.successfulRunHandoffRetried += 1;
             result.issueIds.push(issue.id);
+            continue;
+          }
+          // HIS-4581 (B): a live `scheduled_retry` already owns the successor.
+          // Escalating here would put a task on `blocked` while its retry is
+          // still waiting, which is the interference this change prevents.
+          if (handoffOutcome.retryPending) {
+            result.skipped += 1;
             continue;
           }
         }
