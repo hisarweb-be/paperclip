@@ -1,0 +1,1531 @@
+{
+  "dump": "tmp/his4326/hbruns-vers2.json",
+  "log": "logs/zelfherstel.jsonl",
+  "runsTotaal": 35081,
+  "continuationWakes": 1182,
+  "transientRemAnnuleringenInLog": 230,
+  "waarvanBinnenBudget": 230,
+  "nietMatchen": [],
+  "onderdrukteRuns": 216,
+  "onderdrukteContinuations": 155,
+  "onderdruktePerReden": {
+    "issue_continuation_needed": 155,
+    "transient_failure_retry": 57,
+    "finish_successful_run_handoff": 1,
+    "issue_assignment_recovery": 1,
+    "max_turns_continuation_retry": 1,
+    "issue_commented": 1
+  },
+  "voor": {
+    "totaal": 1182,
+    "perUur": [
+      {
+        "uur": "2026-09-28T10",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-09-29T07",
+        "voor": 2,
+        "na": 2
+      },
+      {
+        "uur": "2026-09-29T20",
+        "voor": 2,
+        "na": 2
+      },
+      {
+        "uur": "2026-09-30T00",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-09-30T03",
+        "voor": 6,
+        "na": 6
+      },
+      {
+        "uur": "2026-09-30T05",
+        "voor": 5,
+        "na": 5
+      },
+      {
+        "uur": "2026-09-30T09",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-09-30T10",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-09-30T11",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-09-30T13",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-09-30T15",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-09-30T16",
+        "voor": 2,
+        "na": 2
+      },
+      {
+        "uur": "2026-09-30T20",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-01T09",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-01T12",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-01T15",
+        "voor": 5,
+        "na": 5
+      },
+      {
+        "uur": "2026-10-01T16",
+        "voor": 24,
+        "na": 24
+      },
+      {
+        "uur": "2026-10-01T20",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-01T22",
+        "voor": 2,
+        "na": 2
+      },
+      {
+        "uur": "2026-10-01T23",
+        "voor": 8,
+        "na": 8
+      },
+      {
+        "uur": "2026-10-02T04",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-02T05",
+        "voor": 23,
+        "na": 23
+      },
+      {
+        "uur": "2026-10-02T11",
+        "voor": 3,
+        "na": 3
+      },
+      {
+        "uur": "2026-10-02T12",
+        "voor": 2,
+        "na": 2
+      },
+      {
+        "uur": "2026-10-02T15",
+        "voor": 3,
+        "na": 3
+      },
+      {
+        "uur": "2026-10-02T16",
+        "voor": 2,
+        "na": 2
+      },
+      {
+        "uur": "2026-10-02T17",
+        "voor": 2,
+        "na": 2
+      },
+      {
+        "uur": "2026-10-02T18",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-02T19",
+        "voor": 4,
+        "na": 4
+      },
+      {
+        "uur": "2026-10-02T20",
+        "voor": 5,
+        "na": 5
+      },
+      {
+        "uur": "2026-10-02T21",
+        "voor": 2,
+        "na": 2
+      },
+      {
+        "uur": "2026-10-03T00",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-03T01",
+        "voor": 5,
+        "na": 5
+      },
+      {
+        "uur": "2026-10-03T03",
+        "voor": 2,
+        "na": 2
+      },
+      {
+        "uur": "2026-10-03T04",
+        "voor": 3,
+        "na": 3
+      },
+      {
+        "uur": "2026-10-03T05",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-03T06",
+        "voor": 4,
+        "na": 4
+      },
+      {
+        "uur": "2026-10-03T07",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-03T08",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-03T09",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-03T10",
+        "voor": 3,
+        "na": 3
+      },
+      {
+        "uur": "2026-10-03T12",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-03T13",
+        "voor": 2,
+        "na": 2
+      },
+      {
+        "uur": "2026-10-03T14",
+        "voor": 3,
+        "na": 3
+      },
+      {
+        "uur": "2026-10-03T15",
+        "voor": 6,
+        "na": 6
+      },
+      {
+        "uur": "2026-10-03T16",
+        "voor": 4,
+        "na": 4
+      },
+      {
+        "uur": "2026-10-03T17",
+        "voor": 8,
+        "na": 8
+      },
+      {
+        "uur": "2026-10-03T18",
+        "voor": 76,
+        "na": 76
+      },
+      {
+        "uur": "2026-10-03T19",
+        "voor": 78,
+        "na": 78
+      },
+      {
+        "uur": "2026-10-03T20",
+        "voor": 72,
+        "na": 72
+      },
+      {
+        "uur": "2026-10-03T21",
+        "voor": 3,
+        "na": 3
+      },
+      {
+        "uur": "2026-10-03T22",
+        "voor": 2,
+        "na": 2
+      },
+      {
+        "uur": "2026-10-04T02",
+        "voor": 6,
+        "na": 6
+      },
+      {
+        "uur": "2026-10-04T03",
+        "voor": 46,
+        "na": 46
+      },
+      {
+        "uur": "2026-10-04T04",
+        "voor": 45,
+        "na": 45
+      },
+      {
+        "uur": "2026-10-04T05",
+        "voor": 3,
+        "na": 3
+      },
+      {
+        "uur": "2026-10-04T07",
+        "voor": 3,
+        "na": 3
+      },
+      {
+        "uur": "2026-10-04T08",
+        "voor": 3,
+        "na": 3
+      },
+      {
+        "uur": "2026-10-04T09",
+        "voor": 24,
+        "na": 24
+      },
+      {
+        "uur": "2026-10-04T11",
+        "voor": 3,
+        "na": 3
+      },
+      {
+        "uur": "2026-10-04T12",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-04T13",
+        "voor": 2,
+        "na": 2
+      },
+      {
+        "uur": "2026-10-04T14",
+        "voor": 2,
+        "na": 2
+      },
+      {
+        "uur": "2026-10-04T15",
+        "voor": 3,
+        "na": 3
+      },
+      {
+        "uur": "2026-10-04T16",
+        "voor": 4,
+        "na": 4
+      },
+      {
+        "uur": "2026-10-04T17",
+        "voor": 5,
+        "na": 5
+      },
+      {
+        "uur": "2026-10-04T18",
+        "voor": 3,
+        "na": 3
+      },
+      {
+        "uur": "2026-10-04T19",
+        "voor": 4,
+        "na": 4
+      },
+      {
+        "uur": "2026-10-04T20",
+        "voor": 6,
+        "na": 6
+      },
+      {
+        "uur": "2026-10-04T21",
+        "voor": 9,
+        "na": 9
+      },
+      {
+        "uur": "2026-10-04T22",
+        "voor": 8,
+        "na": 8
+      },
+      {
+        "uur": "2026-10-04T23",
+        "voor": 16,
+        "na": 16
+      },
+      {
+        "uur": "2026-10-05T00",
+        "voor": 14,
+        "na": 14
+      },
+      {
+        "uur": "2026-10-05T01",
+        "voor": 11,
+        "na": 11
+      },
+      {
+        "uur": "2026-10-05T03",
+        "voor": 2,
+        "na": 2
+      },
+      {
+        "uur": "2026-10-05T05",
+        "voor": 3,
+        "na": 3
+      },
+      {
+        "uur": "2026-10-05T06",
+        "voor": 5,
+        "na": 5
+      },
+      {
+        "uur": "2026-10-05T07",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-05T10",
+        "voor": 5,
+        "na": 5
+      },
+      {
+        "uur": "2026-10-05T11",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-05T14",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-05T15",
+        "voor": 5,
+        "na": 5
+      },
+      {
+        "uur": "2026-10-05T16",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-06T04",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-06T05",
+        "voor": 3,
+        "na": 3
+      },
+      {
+        "uur": "2026-10-06T07",
+        "voor": 8,
+        "na": 8
+      },
+      {
+        "uur": "2026-10-06T13",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-06T14",
+        "voor": 19,
+        "na": 19
+      },
+      {
+        "uur": "2026-10-06T15",
+        "voor": 21,
+        "na": 21
+      },
+      {
+        "uur": "2026-10-06T16",
+        "voor": 9,
+        "na": 9
+      },
+      {
+        "uur": "2026-10-06T17",
+        "voor": 7,
+        "na": 7
+      },
+      {
+        "uur": "2026-10-07T00",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-07T01",
+        "voor": 23,
+        "na": 23
+      },
+      {
+        "uur": "2026-10-07T02",
+        "voor": 6,
+        "na": 6
+      },
+      {
+        "uur": "2026-10-07T03",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-07T04",
+        "voor": 2,
+        "na": 2
+      },
+      {
+        "uur": "2026-10-07T05",
+        "voor": 12,
+        "na": 12
+      },
+      {
+        "uur": "2026-10-07T06",
+        "voor": 5,
+        "na": 5
+      },
+      {
+        "uur": "2026-10-07T07",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-07T10",
+        "voor": 4,
+        "na": 4
+      },
+      {
+        "uur": "2026-10-07T11",
+        "voor": 2,
+        "na": 2
+      },
+      {
+        "uur": "2026-10-07T12",
+        "voor": 4,
+        "na": 4
+      },
+      {
+        "uur": "2026-10-07T13",
+        "voor": 4,
+        "na": 4
+      },
+      {
+        "uur": "2026-10-07T14",
+        "voor": 5,
+        "na": 5
+      },
+      {
+        "uur": "2026-10-07T15",
+        "voor": 3,
+        "na": 3
+      },
+      {
+        "uur": "2026-10-07T16",
+        "voor": 16,
+        "na": 16
+      },
+      {
+        "uur": "2026-10-07T17",
+        "voor": 7,
+        "na": 7
+      },
+      {
+        "uur": "2026-10-07T18",
+        "voor": 15,
+        "na": 15
+      },
+      {
+        "uur": "2026-10-07T19",
+        "voor": 5,
+        "na": 5
+      },
+      {
+        "uur": "2026-10-07T20",
+        "voor": 3,
+        "na": 3
+      },
+      {
+        "uur": "2026-10-07T21",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-07T22",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-07T23",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-08T00",
+        "voor": 2,
+        "na": 2
+      },
+      {
+        "uur": "2026-10-08T01",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-08T05",
+        "voor": 5,
+        "na": 5
+      },
+      {
+        "uur": "2026-10-08T06",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-08T10",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-08T22",
+        "voor": 7,
+        "na": 7
+      },
+      {
+        "uur": "2026-10-09T00",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-09T01",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-09T04",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-10T01",
+        "voor": 2,
+        "na": 2
+      },
+      {
+        "uur": "2026-10-10T08",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-10T09",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-11T01",
+        "voor": 3,
+        "na": 3
+      },
+      {
+        "uur": "2026-10-12T01",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-12T07",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-12T08",
+        "voor": 2,
+        "na": 2
+      },
+      {
+        "uur": "2026-10-13T01",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-13T04",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-13T05",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-13T07",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-14T05",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-14T08",
+        "voor": 18,
+        "na": 0
+      },
+      {
+        "uur": "2026-10-14T09",
+        "voor": 11,
+        "na": 0
+      },
+      {
+        "uur": "2026-10-14T10",
+        "voor": 16,
+        "na": 8
+      },
+      {
+        "uur": "2026-10-14T14",
+        "voor": 2,
+        "na": 0
+      },
+      {
+        "uur": "2026-10-14T15",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-14T16",
+        "voor": 1,
+        "na": 0
+      },
+      {
+        "uur": "2026-10-14T17",
+        "voor": 3,
+        "na": 0
+      },
+      {
+        "uur": "2026-10-14T18",
+        "voor": 11,
+        "na": 3
+      },
+      {
+        "uur": "2026-10-14T19",
+        "voor": 3,
+        "na": 2
+      },
+      {
+        "uur": "2026-10-14T20",
+        "voor": 6,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-14T21",
+        "voor": 3,
+        "na": 0
+      },
+      {
+        "uur": "2026-10-14T23",
+        "voor": 9,
+        "na": 0
+      },
+      {
+        "uur": "2026-10-15T00",
+        "voor": 11,
+        "na": 0
+      },
+      {
+        "uur": "2026-10-15T01",
+        "voor": 1,
+        "na": 0
+      },
+      {
+        "uur": "2026-10-15T13",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-15T15",
+        "voor": 5,
+        "na": 0
+      },
+      {
+        "uur": "2026-10-15T17",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-15T21",
+        "voor": 3,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-15T22",
+        "voor": 1,
+        "na": 0
+      },
+      {
+        "uur": "2026-10-16T05",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-16T06",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-16T08",
+        "voor": 3,
+        "na": 3
+      },
+      {
+        "uur": "2026-10-16T09",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-16T10",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-16T14",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-16T16",
+        "voor": 3,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-16T19",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-17T00",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-17T01",
+        "voor": 3,
+        "na": 3
+      },
+      {
+        "uur": "2026-10-17T11",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-17T19",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-17T22",
+        "voor": 3,
+        "na": 3
+      },
+      {
+        "uur": "2026-10-18T00",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-18T01",
+        "voor": 4,
+        "na": 4
+      },
+      {
+        "uur": "2026-10-18T02",
+        "voor": 5,
+        "na": 5
+      },
+      {
+        "uur": "2026-10-18T03",
+        "voor": 7,
+        "na": 7
+      },
+      {
+        "uur": "2026-10-18T04",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-18T05",
+        "voor": 2,
+        "na": 2
+      },
+      {
+        "uur": "2026-10-18T06",
+        "voor": 5,
+        "na": 5
+      },
+      {
+        "uur": "2026-10-18T07",
+        "voor": 2,
+        "na": 2
+      },
+      {
+        "uur": "2026-10-18T08",
+        "voor": 2,
+        "na": 2
+      },
+      {
+        "uur": "2026-10-18T09",
+        "voor": 3,
+        "na": 3
+      },
+      {
+        "uur": "2026-10-18T11",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-18T14",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-18T15",
+        "voor": 2,
+        "na": 2
+      },
+      {
+        "uur": "2026-10-18T16",
+        "voor": 4,
+        "na": 3
+      },
+      {
+        "uur": "2026-10-18T18",
+        "voor": 4,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-18T19",
+        "voor": 6,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-19T02",
+        "voor": 2,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-19T03",
+        "voor": 2,
+        "na": 2
+      },
+      {
+        "uur": "2026-10-19T08",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-19T15",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-20T03",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-20T09",
+        "voor": 2,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-20T11",
+        "voor": 1,
+        "na": 0
+      },
+      {
+        "uur": "2026-10-20T12",
+        "voor": 2,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-20T13",
+        "voor": 2,
+        "na": 2
+      },
+      {
+        "uur": "2026-10-20T14",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-20T15",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-20T20",
+        "voor": 3,
+        "na": 2
+      },
+      {
+        "uur": "2026-10-20T21",
+        "voor": 1,
+        "na": 0
+      },
+      {
+        "uur": "2026-10-20T22",
+        "voor": 2,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-21T00",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-21T03",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-21T04",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-21T08",
+        "voor": 3,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-21T09",
+        "voor": 6,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-21T10",
+        "voor": 4,
+        "na": 0
+      },
+      {
+        "uur": "2026-10-21T11",
+        "voor": 4,
+        "na": 0
+      },
+      {
+        "uur": "2026-10-21T12",
+        "voor": 1,
+        "na": 0
+      },
+      {
+        "uur": "2026-10-21T13",
+        "voor": 6,
+        "na": 0
+      },
+      {
+        "uur": "2026-10-21T14",
+        "voor": 4,
+        "na": 0
+      },
+      {
+        "uur": "2026-10-21T15",
+        "voor": 16,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-21T16",
+        "voor": 3,
+        "na": 3
+      },
+      {
+        "uur": "2026-10-21T19",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-21T22",
+        "voor": 2,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-21T23",
+        "voor": 4,
+        "na": 2
+      },
+      {
+        "uur": "2026-10-22T04",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-22T05",
+        "voor": 1,
+        "na": 0
+      },
+      {
+        "uur": "2026-10-22T06",
+        "voor": 1,
+        "na": 0
+      },
+      {
+        "uur": "2026-10-22T07",
+        "voor": 1,
+        "na": 0
+      },
+      {
+        "uur": "2026-10-22T08",
+        "voor": 1,
+        "na": 0
+      },
+      {
+        "uur": "2026-10-22T15",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-22T18",
+        "voor": 5,
+        "na": 5
+      },
+      {
+        "uur": "2026-10-22T19",
+        "voor": 7,
+        "na": 7
+      },
+      {
+        "uur": "2026-10-22T20",
+        "voor": 4,
+        "na": 4
+      },
+      {
+        "uur": "2026-10-22T21",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-22T23",
+        "voor": 2,
+        "na": 2
+      },
+      {
+        "uur": "2026-10-23T00",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-23T03",
+        "voor": 2,
+        "na": 2
+      },
+      {
+        "uur": "2026-10-23T06",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-23T08",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-23T10",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-23T11",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-23T16",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-23T17",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-24T00",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-24T02",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-24T05",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-24T07",
+        "voor": 2,
+        "na": 2
+      },
+      {
+        "uur": "2026-10-24T08",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-24T09",
+        "voor": 2,
+        "na": 2
+      },
+      {
+        "uur": "2026-10-24T10",
+        "voor": 2,
+        "na": 2
+      },
+      {
+        "uur": "2026-10-24T11",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-24T19",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-24T20",
+        "voor": 3,
+        "na": 3
+      },
+      {
+        "uur": "2026-10-24T21",
+        "voor": 3,
+        "na": 3
+      },
+      {
+        "uur": "2026-10-24T23",
+        "voor": 2,
+        "na": 2
+      },
+      {
+        "uur": "2026-10-25T01",
+        "voor": 1,
+        "na": 1
+      },
+      {
+        "uur": "2026-10-25T10",
+        "voor": 3,
+        "na": 3
+      },
+      {
+        "uur": "2026-10-25T11",
+        "voor": 2,
+        "na": 2
+      },
+      {
+        "uur": "2026-10-25T15",
+        "voor": 1,
+        "na": 1
+      }
+    ]
+  },
+  "na": {
+    "totaal": 1027
+  },
+  "h3686Venster": {
+    "runsVoor": 26,
+    "continuationsVoor": 10,
+    "runsNa": 5,
+    "continuationsNa": 0,
+    "keten": [
+      {
+        "tijd": "2026-10-21T15:14:14.611Z",
+        "run": "f08fe8c3",
+        "reden": "issue_assigned",
+        "retryOf": null,
+        "poging": 0,
+        "status": "failed",
+        "blijftStaan": false,
+        "onderdrukt": false
+      },
+      {
+        "tijd": "2026-10-21T15:17:36.793Z",
+        "run": "9c677dfe",
+        "reden": "transient_failure_retry",
+        "retryOf": "f08fe8c3",
+        "poging": 1,
+        "status": "failed",
+        "blijftStaan": false,
+        "onderdrukt": false
+      },
+      {
+        "tijd": "2026-10-21T15:20:04.789Z",
+        "run": "e593e430",
+        "reden": "transient_failure_retry",
+        "retryOf": "9c677dfe",
+        "poging": 2,
+        "status": "failed",
+        "blijftStaan": false,
+        "onderdrukt": false
+      },
+      {
+        "tijd": "2026-10-21T15:29:14.803Z",
+        "run": "98da4a54",
+        "reden": "Zelfherstel (mislukte run e593e430): opnieuw gestart na een ",
+        "retryOf": null,
+        "poging": 0,
+        "status": "failed",
+        "blijftStaan": false,
+        "onderdrukt": false
+      },
+      {
+        "tijd": "2026-10-21T15:29:24.161Z",
+        "run": "914e3ce1",
+        "reden": "transient_failure_retry",
+        "retryOf": "98da4a54",
+        "poging": 1,
+        "status": "cancelled",
+        "blijftStaan": true,
+        "onderdrukt": false
+      },
+      {
+        "tijd": "2026-10-21T15:31:16.615Z",
+        "run": "a8f91688",
+        "reden": "issue_continuation_needed",
+        "retryOf": "914e3ce1",
+        "poging": 0,
+        "status": "failed",
+        "blijftStaan": false,
+        "onderdrukt": true
+      },
+      {
+        "tijd": "2026-10-21T15:31:29.856Z",
+        "run": "5205ad70",
+        "reden": "transient_failure_retry",
+        "retryOf": "a8f91688",
+        "poging": 1,
+        "status": "cancelled",
+        "blijftStaan": true,
+        "onderdrukt": true
+      },
+      {
+        "tijd": "2026-10-21T15:34:02.714Z",
+        "run": "b3b39c58",
+        "reden": "issue_continuation_needed",
+        "retryOf": "5205ad70",
+        "poging": 0,
+        "status": "failed",
+        "blijftStaan": false,
+        "onderdrukt": true
+      },
+      {
+        "tijd": "2026-10-21T15:34:18.109Z",
+        "run": "63cb72e5",
+        "reden": "transient_failure_retry",
+        "retryOf": "b3b39c58",
+        "poging": 1,
+        "status": "cancelled",
+        "blijftStaan": true,
+        "onderdrukt": true
+      },
+      {
+        "tijd": "2026-10-21T15:37:03.146Z",
+        "run": "632d5375",
+        "reden": "issue_continuation_needed",
+        "retryOf": "63cb72e5",
+        "poging": 0,
+        "status": "failed",
+        "blijftStaan": false,
+        "onderdrukt": true
+      },
+      {
+        "tijd": "2026-10-21T15:37:15.429Z",
+        "run": "80771bac",
+        "reden": "transient_failure_retry",
+        "retryOf": "632d5375",
+        "poging": 1,
+        "status": "cancelled",
+        "blijftStaan": true,
+        "onderdrukt": true
+      },
+      {
+        "tijd": "2026-10-21T15:40:01.601Z",
+        "run": "adf95fbe",
+        "reden": "issue_continuation_needed",
+        "retryOf": "80771bac",
+        "poging": 0,
+        "status": "failed",
+        "blijftStaan": false,
+        "onderdrukt": true
+      },
+      {
+        "tijd": "2026-10-21T15:40:15.395Z",
+        "run": "a158a19b",
+        "reden": "transient_failure_retry",
+        "retryOf": "adf95fbe",
+        "poging": 1,
+        "status": "cancelled",
+        "blijftStaan": true,
+        "onderdrukt": true
+      },
+      {
+        "tijd": "2026-10-21T15:43:03.208Z",
+        "run": "f899411c",
+        "reden": "issue_continuation_needed",
+        "retryOf": "a158a19b",
+        "poging": 0,
+        "status": "failed",
+        "blijftStaan": false,
+        "onderdrukt": true
+      },
+      {
+        "tijd": "2026-10-21T15:43:13.291Z",
+        "run": "c0fa04f0",
+        "reden": "transient_failure_retry",
+        "retryOf": "f899411c",
+        "poging": 1,
+        "status": "cancelled",
+        "blijftStaan": true,
+        "onderdrukt": true
+      },
+      {
+        "tijd": "2026-10-21T15:46:04.472Z",
+        "run": "5c34da6e",
+        "reden": "issue_continuation_needed",
+        "retryOf": "c0fa04f0",
+        "poging": 0,
+        "status": "failed",
+        "blijftStaan": false,
+        "onderdrukt": true
+      },
+      {
+        "tijd": "2026-10-21T15:46:18.817Z",
+        "run": "3d4ccb67",
+        "reden": "transient_failure_retry",
+        "retryOf": "5c34da6e",
+        "poging": 1,
+        "status": "cancelled",
+        "blijftStaan": true,
+        "onderdrukt": true
+      },
+      {
+        "tijd": "2026-10-21T15:49:03.788Z",
+        "run": "2dc0e1d2",
+        "reden": "issue_continuation_needed",
+        "retryOf": "3d4ccb67",
+        "poging": 0,
+        "status": "failed",
+        "blijftStaan": false,
+        "onderdrukt": true
+      },
+      {
+        "tijd": "2026-10-21T15:49:16.287Z",
+        "run": "3caaec0b",
+        "reden": "transient_failure_retry",
+        "retryOf": "2dc0e1d2",
+        "poging": 1,
+        "status": "cancelled",
+        "blijftStaan": true,
+        "onderdrukt": true
+      },
+      {
+        "tijd": "2026-10-21T15:52:05.708Z",
+        "run": "1bd410b8",
+        "reden": "issue_continuation_needed",
+        "retryOf": "3caaec0b",
+        "poging": 0,
+        "status": "failed",
+        "blijftStaan": false,
+        "onderdrukt": true
+      },
+      {
+        "tijd": "2026-10-21T15:52:25.387Z",
+        "run": "f969bd05",
+        "reden": "transient_failure_retry",
+        "retryOf": "1bd410b8",
+        "poging": 1,
+        "status": "cancelled",
+        "blijftStaan": true,
+        "onderdrukt": true
+      },
+      {
+        "tijd": "2026-10-21T15:55:03.805Z",
+        "run": "e6c2fd22",
+        "reden": "issue_continuation_needed",
+        "retryOf": "f969bd05",
+        "poging": 0,
+        "status": "failed",
+        "blijftStaan": false,
+        "onderdrukt": true
+      },
+      {
+        "tijd": "2026-10-21T15:55:11.590Z",
+        "run": "92535993",
+        "reden": "transient_failure_retry",
+        "retryOf": "e6c2fd22",
+        "poging": 1,
+        "status": "cancelled",
+        "blijftStaan": true,
+        "onderdrukt": true
+      },
+      {
+        "tijd": "2026-10-21T15:58:03.323Z",
+        "run": "09af5c6b",
+        "reden": "issue_continuation_needed",
+        "retryOf": "92535993",
+        "poging": 0,
+        "status": "failed",
+        "blijftStaan": false,
+        "onderdrukt": true
+      },
+      {
+        "tijd": "2026-10-21T15:58:15.618Z",
+        "run": "d6e9afb7",
+        "reden": "transient_failure_retry",
+        "retryOf": "09af5c6b",
+        "poging": 1,
+        "status": "failed",
+        "blijftStaan": false,
+        "onderdrukt": true
+      },
+      {
+        "tijd": "2026-10-21T16:10:46.171Z",
+        "run": "451d3554",
+        "reden": "transient_failure_retry",
+        "retryOf": "d6e9afb7",
+        "poging": 2,
+        "status": "cancelled",
+        "blijftStaan": false,
+        "onderdrukt": true
+      }
+    ]
+  },
+  "logControle": {
+    "pluginAnnuleringenH3686Totaal": 10,
+    "pluginAnnuleringenH3686InVenster": 10,
+    "replayRijenInVenster": 10,
+    "identiek": true
+  }
+}

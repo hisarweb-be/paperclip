@@ -1911,6 +1911,7 @@ export function recoveryService(
 
   async function enqueueStrandedIssueRecovery(input: {
     issueId: string;
+    companyId?: string | null;
     agentId: string;
     reason:
       | "issue_assignment_recovery"
@@ -1944,6 +1945,7 @@ export function recoveryService(
     // same task). Same window as the A1 gate, so the two never disagree.
     if (
       await hasLiveScheduledRetry(db, {
+        companyId: input.companyId,
         agentId: input.agentId,
         issueId: input.issueId,
       })
@@ -4726,6 +4728,7 @@ export function recoveryService(
           await readChatControlRecoveryStop(db, {
             companyId: issue.companyId,
             issueId: issue.id,
+            companyId: issue.companyId,
             agentId,
             sourceRunId: executionRecoverySource.id,
           })
@@ -5033,6 +5036,7 @@ export function recoveryService(
 
           const queued = await enqueueStrandedIssueRecovery({
             issueId: issue.id,
+            companyId: issue.companyId,
             agentId,
             reason: "issue_continuation_needed",
             retryReason: "issue_continuation_needed",
@@ -5206,6 +5210,7 @@ export function recoveryService(
         const reviewOutcome: { retryExhausted?: boolean } = {};
         const queued = await enqueueStrandedIssueRecovery({
           issueId: issue.id,
+          companyId: issue.companyId,
           agentId: participantAgentId,
           reason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
           retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
@@ -5329,6 +5334,7 @@ export function recoveryService(
         const dispatchOutcome: { retryExhausted?: boolean } = {};
         const queued = await enqueueStrandedIssueRecovery({
           issueId: issue.id,
+          companyId: issue.companyId,
           agentId,
           reason: "issue_assignment_recovery",
           retryReason: "assignment_recovery",
@@ -5423,6 +5429,7 @@ export function recoveryService(
           const handoffOutcome: { retryExhausted?: boolean; retryPending?: boolean } = {};
           const retried = await enqueueStrandedIssueRecovery({
             issueId: issue.id,
+            companyId: issue.companyId,
             agentId,
             reason: "issue_continuation_needed",
             retryReason: "issue_continuation_needed",
@@ -5517,6 +5524,7 @@ export function recoveryService(
 
         const queued = await enqueueStrandedIssueRecovery({
           issueId: issue.id,
+          companyId: issue.companyId,
           agentId,
           reason: "issue_continuation_needed",
           retryReason: "issue_continuation_needed",

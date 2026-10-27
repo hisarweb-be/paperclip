@@ -72,6 +72,9 @@ export async function countIssueRetryChainsSince(
 export async function hasLiveScheduledRetry(
   executor: Executor,
   input: {
+    /** Scoped like countIssueRetryChainsSince: a retry row of another company
+     * must never be read as this task's live successor. */
+    companyId?: string;
     agentId: string;
     issueId: string;
     now?: Date;
@@ -82,7 +85,8 @@ export async function hasLiveScheduledRetry(
   const rows = await executor.execute(sql`
     select w.id
     from heartbeat_runs w
-    where w.agent_id = ${input.agentId}
+    where (${input.companyId ?? null}::uuid is null or w.company_id = ${input.companyId ?? null}::uuid)
+      and w.agent_id = ${input.agentId}
       and w.status = 'scheduled_retry'
       and coalesce(
         w.context_snapshot ->> 'issueId',
