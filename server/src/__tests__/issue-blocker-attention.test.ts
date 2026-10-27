@@ -229,7 +229,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
-  it("keeps mixed blockers attention-required when any path lacks active work", async () => {
+  it("keeps mixed blockers attention-required when any path lacks an owner", async () => {
     const { companyId, agentId } = await createCompany("PBM");
     const parentId = await insertIssue({ companyId, identifier: "PBM-1", title: "Parent", status: "blocked" });
     const activeChildId = await insertIssue({
@@ -243,9 +243,8 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     const idleBlockerId = await insertIssue({
       companyId,
       identifier: "PBM-3",
-      title: "Idle blocker",
+      title: "Unowned blocker",
       status: "todo",
-      assigneeAgentId: agentId,
     });
     await block({ companyId, blockerIssueId: activeChildId, blockedIssueId: parentId });
     await block({ companyId, blockerIssueId: idleBlockerId, blockedIssueId: parentId });
@@ -333,15 +332,111 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
+  it("names the direct blocker instead of a sub-task deeper in the decomposition tree", async () => {
+    const { companyId, agentId } = await createCompany("PBK");
+    const rootId = await insertIssue({
+      companyId,
+      identifier: "PBK-1",
+      title: "Blocked root",
+      status: "blocked",
+    });
+    const directBlockerId = await insertIssue({
+      companyId,
+      identifier: "PBK-2",
+      title: "Direct blocker",
+      status: "todo",
+      assigneeAgentId: agentId,
+    });
+    const subTaskId = await insertIssue({
+      companyId,
+      identifier: "PBK-3",
+      title: "Sub-task of the direct blocker",
+      status: "todo",
+      parentId: directBlockerId,
+      assigneeAgentId: agentId,
+    });
+    await insertIssue({
+      companyId,
+      identifier: "PBK-4",
+      title: "Unowned leaf deep in the sub-task tree",
+      status: "todo",
+      parentId: subTaskId,
+    });
+    await block({
+      companyId,
+      blockerIssueId: directBlockerId,
+      blockedIssueId: rootId,
+    });
+
+    const root = (await svc.list(companyId, { status: "blocked" })).find(
+      (issue) => issue.id === rootId,
+    );
+
+    // The sub-task tree is not part of the blocker graph the board sees, so the
+    // sampled card must stay on the first-class dependency.
+    expect(root?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "attention_required",
+      unresolvedBlockerCount: 1,
+      attentionBlockerCount: 1,
+      sampleBlockerIdentifier: "PBK-2",
+      directBlockerIssueId: directBlockerId,
+      terminalBlockerIssueId: directBlockerId,
+      terminalBlocker: { identifier: "PBK-2" },
+    });
+  });
+
+  it("counts todo blockers with a live owner as waiting paths", async () => {
+    const { companyId, agentId } = await createCompany("PBQ");
+    const rootId = await insertIssue({
+      companyId,
+      identifier: "PBQ-1",
+      title: "Blocked root",
+      status: "blocked",
+    });
+    const firstBlockerId = await insertIssue({
+      companyId,
+      identifier: "PBQ-2",
+      title: "Queued at the first owner",
+      status: "todo",
+      assigneeAgentId: agentId,
+    });
+    const secondBlockerId = await insertIssue({
+      companyId,
+      identifier: "PBQ-3",
+      title: "Queued at the second owner",
+      status: "todo",
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: firstBlockerId, blockedIssueId: rootId });
+    await block({ companyId, blockerIssueId: secondBlockerId, blockedIssueId: rootId });
+
+    const root = (await svc.list(companyId, { status: "blocked" })).find(
+      (issue) => issue.id === rootId,
+    );
+
+    expect(root?.blockerAttention).toMatchObject({
+      state: "covered",
+      reason: "active_dependency",
+      unresolvedBlockerCount: 2,
+      coveredBlockerCount: 2,
+      stalledBlockerCount: 0,
+      attentionBlockerCount: 0,
+    });
+  });
+
   it("does not let another company's active run cover the blocker", async () => {
     const { companyId, agentId } = await createCompany("PBS");
     const other = await createCompany("PBT");
     const parentId = await insertIssue({ companyId, identifier: "PBS-1", title: "Parent", status: "blocked" });
+    // In progress, so the only thing that could cover this blocker is a live
+    // execution path; a queued todo card with a live owner is covered by
+    // ownership instead and would not exercise the company scoping.
     const blockerId = await insertIssue({
       companyId,
       identifier: "PBS-2",
       title: "Same-company blocker",
-      status: "todo",
+      status: "in_progress",
       assigneeAgentId: agentId,
     });
     await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });

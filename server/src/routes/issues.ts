@@ -15096,6 +15096,13 @@ export function issueRoutes(
       })();
 
       await queueTaskWatchdogEvaluation(issue, actor.runId);
+      // blockerAttention is derived from the live blocker graph. Recompute it on
+      // the committed row so the write response carries the same derivation a
+      // follow-up GET returns, instead of an absent (null) field that suggests
+      // the flag was cleared.
+      const blockerAttention = await svc
+        .listBlockerAttention(issueResponse.companyId, [issueResponse])
+        .then((map) => map.get(issueResponse.id) ?? null);
       const changes = issueResponse.changes ?? {};
       if (prefersMinimalIssueUpdateResponse(req)) {
         res.setHeader("Preference-Applied", "return=minimal");
@@ -15108,7 +15115,15 @@ export function issueRoutes(
         });
         return;
       }
-      res.json({ ...issueResponse, changes, comment });
+      res.json({
+        ...issueResponse,
+        // listBlockerAttention always yields an entry for the row it was given,
+        // so this is present in practice; the guard only keeps service doubles
+        // that answer with an empty map from inventing a null field.
+        ...(blockerAttention ? { blockerAttention } : {}),
+        changes,
+        comment,
+      });
     },
   );
 

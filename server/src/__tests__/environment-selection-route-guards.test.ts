@@ -17,6 +17,7 @@ const mockProjectService = vi.hoisted(() => ({
 }));
 
 const mockIssueService = vi.hoisted(() => ({
+  listBlockerAttention: vi.fn(async () => new Map()),
   create: vi.fn(),
   getById: vi.fn(),
   update: vi.fn(),
