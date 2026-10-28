@@ -13,7 +13,10 @@ import {
   type RoutineExecutionRunnerResolution,
 } from "../routine-execution-binding.js";
 import { hasLiveLegacyController } from "../legacy-controller-lease.js";
-import { hasLiveScheduledRetry } from "../issue-retry-budget.js";
+import {
+  hasLiveScheduledRetry,
+  ISSUE_RETRY_HOURLY_BUDGET_WINDOW_MS,
+} from "../issue-retry-budget.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { isWaitingConversation, settleConversationTurn, deliverConversationComments } from "../agent-conversations.js";
 import {
@@ -1093,6 +1096,16 @@ export function recoveryService(
     issueId: string,
     agentId?: string | null,
   ) {
+    // HIS-4581 (B): a `scheduled_retry` row is only a live execution path
+    // while its retry is still inside the hourly budget. Past that window the
+    // transient-rem plugin cleans the row up, so treating it as active would
+    // skip the task on every sweep and hide it from the handoff lane (and,
+    // transitively, from the escalation that must follow a spent budget).
+    // Same window and column as `hasLiveScheduledRetry` in
+    // ../issue-retry-budget.ts, so the two never disagree.
+    const liveScheduledRetrySince = new Date(
+      Date.now() - ISSUE_RETRY_HOURLY_BUDGET_WINDOW_MS,
+    ).toISOString();
     const [run, deferredWake, nativeRecovery] = await Promise.all([
       db
         .select({ id: heartbeatRuns.id })
@@ -1100,9 +1113,19 @@ export function recoveryService(
         .where(
           and(
             eq(heartbeatRuns.companyId, companyId),
-            inArray(heartbeatRuns.status, [
-              ...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES,
-            ]),
+            sql`(
+              ${heartbeatRuns.status} in (${sql.join(
+                EXECUTION_PATH_HEARTBEAT_RUN_STATUSES.filter(
+                  (status) => status !== "scheduled_retry",
+                ).map((status) => sql`${status}`),
+                sql`, `,
+              )})
+              or (
+                ${heartbeatRuns.status} = 'scheduled_retry'
+                and coalesce(${heartbeatRuns.scheduledRetryAt}, ${heartbeatRuns.createdAt})
+                  >= ${liveScheduledRetrySince}::timestamptz
+              )
+            )`,
             sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
             agentId ? eq(heartbeatRuns.agentId, agentId) : sql`true`,
           ),
