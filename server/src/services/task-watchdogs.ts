@@ -1374,11 +1374,23 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         }) ?? fallback
         : fallback;
       if (!shouldReopen && watchdogIssue.originFingerprint !== input.classification.stopFingerprint) {
+        // The review issue stays open (its review already runs), so the row is
+        // updated in place. The description must move with the column here too,
+        // otherwise a human keeps reading the previous stop.
+        const reboundDescription = withUpdatedStopFingerprintDescription(
+          watchdogIssue.description,
+          input.classification.stopFingerprint,
+        );
         await db
           .update(issues)
-          .set({ originFingerprint: input.classification.stopFingerprint, updatedAt: new Date() })
+          .set({
+            originFingerprint: input.classification.stopFingerprint,
+            description: reboundDescription,
+            updatedAt: new Date(),
+          })
           .where(and(eq(issues.companyId, input.watchdog.companyId), eq(issues.id, watchdogIssue.id)));
         watchdogIssue.originFingerprint = input.classification.stopFingerprint;
+        watchdogIssue.description = reboundDescription;
       }
       await issuesSvc.addComment(
         watchdogIssue.id,
