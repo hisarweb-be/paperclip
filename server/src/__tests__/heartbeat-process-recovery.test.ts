@@ -5940,6 +5940,152 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(retryRuns).toHaveLength(1);
   });
 
+  it("leaves an interrupted corrective successful-run handoff alone while a live scheduled retry owns the successor", async () => {
+    // HIS-4581 (B): the bounded retry already queued for this task is the
+    // successor. Escalating the handoff would put the task on `blocked` while
+    // its retry is still waiting, which is exactly the interference between
+    // the sweeper and the retry gate that this change must prevent.
+    const { companyId, agentId, runId, issueId } =
+      await seedStrandedIssueFixture({
+        status: "in_progress",
+        runStatus: "failed",
+        runErrorCode: "server_shutdown_interrupted",
+        runError: "Interrupted by graceful server shutdown (SIGTERM)",
+      });
+    const sourceRunId = randomUUID();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "interrupted",
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "finish_successful_run_handoff",
+          sourceRunId,
+          resumeFromRunId: sourceRunId,
+          handoffRequired: true,
+          handoffReason: "successful_run_missing_state",
+          missingDisposition: "clear_next_step",
+          handoffAttempt: 1,
+          maxHandoffAttempts: 1,
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    // The retry the transient-failure path already scheduled a few minutes
+    // ago: it still waits inside the hourly budget, so it owns the successor.
+    const liveRetryId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: liveRetryId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "scheduled_retry",
+      retryOfRunId: runId,
+      scheduledRetryAt: new Date(Date.now() + 2 * 60_000),
+      scheduledRetryAttempt: 1,
+      scheduledRetryReason: "transient_failure",
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "transient_failure_retry",
+        retryOfRunId: runId,
+      },
+      createdAt: new Date(Date.now() - 10 * 60_000),
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.successfulRunHandoffEscalated).toBe(0);
+    expect(result.successfulRunHandoffRetried).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBe(1);
+
+    const sourceIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(sourceIssue?.status).toBe("in_progress");
+    expect(sourceIssue?.assigneeAgentId).toBe(agentId);
+    const recoveryActions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(recoveryActions).toHaveLength(0);
+    // No second successor was stacked on top of the waiting one.
+    const successors = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId));
+    expect(successors.map((row) => row.id)).toEqual([liveRetryId]);
+  });
+
+  it("does not treat a scheduled retry past its hourly budget window as the live successor", async () => {
+    // Same fixture, but the waiting retry is older than the budget window the
+    // A1 gate uses. Past it the transient-rem plugin cleans the row up, so the
+    // sweep must not keep skipping the task on a row that no longer lives.
+    const { companyId, agentId, runId, issueId } =
+      await seedStrandedIssueFixture({
+        status: "in_progress",
+        runStatus: "failed",
+        runErrorCode: "server_shutdown_interrupted",
+        runError: "Interrupted by graceful server shutdown (SIGTERM)",
+      });
+    const sourceRunId = randomUUID();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "interrupted",
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "finish_successful_run_handoff",
+          sourceRunId,
+          resumeFromRunId: sourceRunId,
+          handoffRequired: true,
+          handoffReason: "successful_run_missing_state",
+          missingDisposition: "clear_next_step",
+          handoffAttempt: 1,
+          maxHandoffAttempts: 1,
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "scheduled_retry",
+      retryOfRunId: runId,
+      scheduledRetryAt: new Date(Date.now() - 2 * 60 * 60_000),
+      scheduledRetryAttempt: 1,
+      scheduledRetryReason: "transient_failure",
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "transient_failure_retry",
+        retryOfRunId: runId,
+      },
+      createdAt: new Date(Date.now() - 3 * 60 * 60_000),
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.successfulRunHandoffEscalated).toBe(0);
+    expect(result.successfulRunHandoffRetried).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+    const sourceIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(sourceIssue?.status).toBe("in_progress");
+  });
+
   it("escalates an interrupted corrective successful-run handoff once its transient retry budget is spent", async () => {
     const { companyId, agentId, runId, issueId } =
       await seedStrandedIssueFixture({
