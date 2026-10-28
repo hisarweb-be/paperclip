@@ -537,6 +537,10 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       status: "todo",
       originFingerprint: newerFingerprint,
     });
+    // The description must carry the same fingerprint the column does, otherwise
+    // a human reading the review issue sees the previous stop.
+    expect(reopenedWatchdogIssue?.description).toContain(`Stopped fingerprint: ${newerFingerprint}`);
+    expect(reopenedWatchdogIssue?.description).not.toContain(`Stopped fingerprint: ${oldFingerprint}`);
     const reviewActivities = await db
       .select()
       .from(activityLog)
