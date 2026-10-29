@@ -613,6 +613,21 @@ function reviewedFingerprintForWatchdogIssue(issue: Pick<IssueRow, "originFinger
   return normalizeStopFingerprint(issue.originFingerprint) ?? stopFingerprintFromText(issue.description);
 }
 
+// The description carries the same stop fingerprint the column does, so a
+// human reading the review issue sees the fingerprint the watchdog actually
+// compares against. Reusing an existing issue must keep both in step.
+function withUpdatedStopFingerprintDescription(
+  description: string | null | undefined,
+  stopFingerprint: string,
+) {
+  const line = `Stopped fingerprint: ${stopFingerprint}`;
+  const existing = description ?? "";
+  const pattern = /^Stopped fingerprint:.*$/m;
+  if (pattern.test(existing)) return existing.replace(pattern, line);
+  const base = existing.trimEnd();
+  return base.length > 0 ? `${base}\n\n${line}` : line;
+}
+
 function taskWatchdogWakeIdempotencyKey(watchdogId: string, stopFingerprint: string) {
   return `task_watchdog:${watchdogId}:${stopFingerprint}`;
 }
@@ -1352,14 +1367,30 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           goalId: input.sourceIssue.goalId,
           billingCode: input.sourceIssue.billingCode,
           originFingerprint: input.classification.stopFingerprint,
+          description: withUpdatedStopFingerprintDescription(
+            fallback.description,
+            input.classification.stopFingerprint,
+          ),
         }) ?? fallback
         : fallback;
       if (!shouldReopen && watchdogIssue.originFingerprint !== input.classification.stopFingerprint) {
+        // The review issue stays open (its review already runs), so the row is
+        // updated in place. The description must move with the column here too,
+        // otherwise a human keeps reading the previous stop.
+        const reboundDescription = withUpdatedStopFingerprintDescription(
+          watchdogIssue.description,
+          input.classification.stopFingerprint,
+        );
         await db
           .update(issues)
-          .set({ originFingerprint: input.classification.stopFingerprint, updatedAt: new Date() })
+          .set({
+            originFingerprint: input.classification.stopFingerprint,
+            description: reboundDescription,
+            updatedAt: new Date(),
+          })
           .where(and(eq(issues.companyId, input.watchdog.companyId), eq(issues.id, watchdogIssue.id)));
         watchdogIssue.originFingerprint = input.classification.stopFingerprint;
+        watchdogIssue.description = reboundDescription;
       }
       await issuesSvc.addComment(
         watchdogIssue.id,

@@ -537,6 +537,10 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       status: "todo",
       originFingerprint: newerFingerprint,
     });
+    // The description must carry the same fingerprint the column does, otherwise
+    // a human reading the review issue sees the previous stop.
+    expect(reopenedWatchdogIssue?.description).toContain(`Stopped fingerprint: ${newerFingerprint}`);
+    expect(reopenedWatchdogIssue?.description).not.toContain(`Stopped fingerprint: ${oldFingerprint}`);
     const reviewActivities = await db
       .select()
       .from(activityLog)
@@ -547,6 +551,43 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       lastObservedFingerprint: newerFingerprint,
     });
     expect(wakes.length).toBe(2);
+  });
+
+  it("keeps the description on the newest stop when a live review issue is not reopened", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-NOREOPEN", status: "done" });
+    const childId = await seedIssue(companyId, { parentId: sourceId, status: "done" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    const [firstWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const oldFingerprint = firstWatchdog!.lastObservedFingerprint!;
+    const watchdogIssueId = firstWatchdog!.watchdogIssueId!;
+    // A review issue with a disposition path (executionState) but no live run or
+    // queued wake keeps its status; only the fingerprint column used to move.
+    await db
+      .update(issues)
+      .set({
+        status: "in_review",
+        executionState: { phase: "review" },
+        originFingerprint: oldFingerprint,
+      })
+      .where(eq(issues.id, watchdogIssueId));
+
+    await db
+      .update(issues)
+      .set({ status: "blocked", updatedAt: new Date(Date.now() + 60_000) })
+      .where(eq(issues.id, childId));
+    const second = await service.reconcileTaskWatchdogs({ companyId });
+    expect(second).toMatchObject({ checked: 1, triggered: 1 });
+
+    const [watchdogIssue] = await db.select().from(issues).where(eq(issues.id, watchdogIssueId));
+    expect(watchdogIssue?.status).toBe("in_review");
+    expect(watchdogIssue?.originFingerprint).not.toBe(oldFingerprint);
+    expect(watchdogIssue?.description).toContain(`Stopped fingerprint: ${watchdogIssue?.originFingerprint}`);
+    expect(watchdogIssue?.description).not.toContain(`Stopped fingerprint: ${oldFingerprint}`);
   });
 
   it("keeps watchdog mutation scope valid across metadata-only source evidence", async () => {
