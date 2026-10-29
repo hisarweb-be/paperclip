@@ -909,9 +909,27 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       !principalsEqual(currentAssignee, currentParticipant) ||
       !principalsEqual(existingState?.currentParticipant ?? null, currentParticipant);
 
-    if (input.allowBoardOverride && attemptedStageAdvance) {
+    // A review stage whose participants are all the return assignee is a
+    // self-review: the reviewer is the executor, so there is nobody whose
+    // approval could be lost by retreating the status. Gating those retreats
+    // behind allowBoardOverride left such issues stuck in_review with a 422 for
+    // anyone but the executor. Dissolving the stage and handing the issue back
+    // to the executor is the same outcome the board override produces, so the
+    // relaxation is limited to exactly that case.
+    const selfReviewStage =
+      activeStage.type === "review" &&
+      existingState?.returnAssignee != null &&
+      activeStage.participants.length > 0 &&
+      activeStage.participants.every((participant) =>
+        principalsEqual(participant, existingState!.returnAssignee!),
+      );
+
+    if ((input.allowBoardOverride || selfReviewStage) && attemptedStageAdvance) {
       if (requestedStatus !== undefined && requestedStatus !== "in_review") {
         patch.executionState = null;
+        if (selfReviewStage) {
+          Object.assign(patch, patchForPrincipal(existingState!.returnAssignee!));
+        }
         return { patch };
       }
       // Assignee-only override: the issue stays in_review, so clearing the
