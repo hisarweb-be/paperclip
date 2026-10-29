@@ -13282,6 +13282,12 @@ export function issueRoutes(
       const monitorChanged =
         monitorPoliciesEqual(previousExecutionPolicy, nextExecutionPolicy) ===
         false;
+      // Presence in the body counts as an explicit monitor update, even when the
+      // value equals the stored monitor. Comparing only differences silently
+      // dropped a monitor sent along with a status change that forbids it.
+      const monitorPresentInBody =
+        req.body.executionPolicy !== undefined &&
+        normalizeIssueExecutionPolicy(req.body.executionPolicy)?.monitor != null;
       await assertCanManageIssueMonitor(
         access,
         req,
@@ -13312,8 +13318,7 @@ export function issueRoutes(
         allowBoardOverride: req.actor.type === "board",
         commentBody,
         reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
-        monitorExplicitlyUpdated:
-          req.body.executionPolicy !== undefined && monitorChanged,
+        monitorExplicitlyUpdated: monitorPresentInBody || monitorChanged,
       });
       const decisionId = transition.decision ? randomUUID() : null;
       if (decisionId) {
