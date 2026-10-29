@@ -699,6 +699,9 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
   it("ACCT-01 alternating failures, productive continuations and waits preserve both allowances after restart", async () => {
     const f = await seedMaxTurnFixture();
     let current = (await heartbeat.getRun(f.runId))!;
+    // HIS-4580: the hourly retry budget counts chains per task, so this accounting
+    // walk spreads its chains over separate hours instead of packing them into one.
+    let clock = f.now;
     for (const [reason, attempt, failures, continuations] of [
       ["transient_failure", 1, 1, 0],
       [MAX_TURN_CONTINUATION_RETRY_REASON, 1, 1, 1],
@@ -715,18 +718,22 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
           executionRecovery: { kind: waiting ? (reason === "workspace_busy" ? "workspace_wait" : "ai_connection_wait") : "bootstrap", providerWorkStarted: false } },
       }).where(eq(heartbeatRuns.id, current.id));
       const restarted = heartbeatService(db);
-      const result = await restarted.scheduleBoundedRetry(current.id, { now: f.now, retryReason: reason, maxAttempts: 2, delayMs: 1 });
+      const result = await restarted.scheduleBoundedRetry(current.id, { now: clock, retryReason: reason, maxAttempts: 2, delayMs: 1 });
       expect(result, JSON.stringify({ reason, result })).toMatchObject({ outcome: "scheduled", attempt });
       if (result.outcome !== "scheduled") throw new Error("Missing successor");
       expect(result.run.contextSnapshot?.executionRetryAccounting).toEqual({ version: 1, failureRetries: failures, maxTurnContinuations: continuations });
-      await db.update(heartbeatRuns).set({ status: "failed", finishedAt: f.now,
+      // The successor row is stamped with the walked clock: the hourly budget counts
+      // chains by createdAt, and a real "now" would keep every chain inside one window.
+      await db.update(heartbeatRuns).set({ status: "failed", finishedAt: clock,
+        createdAt: clock, updatedAt: clock,
         resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
       }).where(eq(heartbeatRuns.id, result.run.id));
       await db.update(issues).set({ executionRunId: result.run.id }).where(eq(issues.id, f.issueId));
       current = (await restarted.getRun(result.run.id))!;
+      clock = new Date(clock.getTime() + 2 * 60 * 60 * 1000);
     }
     for (const retryReason of ["transient_failure", MAX_TURN_CONTINUATION_RETRY_REASON]) {
-      expect(await heartbeatService(db).scheduleBoundedRetry(current.id, { now: f.now, retryReason, maxAttempts: 2, delayMs: 1 }))
+      expect(await heartbeatService(db).scheduleBoundedRetry(current.id, { now: clock, retryReason, maxAttempts: 2, delayMs: 1 }))
         .toMatchObject({ outcome: "retry_exhausted", attempt: 3 });
     }
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(7);
@@ -1971,6 +1978,143 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     } finally {
       unsubscribe();
     }
+  });
+
+  it("bounds automatic retries per agent and task to three per hour", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const now = new Date("2026-04-20T12:00:00.000Z");
+    const minutesAgo = (minutes: number) => new Date(now.getTime() - minutes * 60_000);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+
+    // Each failed run starts a fresh chain (scheduledRetryAttempt = 0); that
+    // shape is the measured leak on HIS-3686, where ten of 24 retry runs had
+    // no attempt counter and therefore never spent a budget.
+    const failedRun = async (createdAt: Date) => {
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "failed",
+        error: "upstream overload",
+        errorCode: "adapter_failed",
+        resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+        finishedAt: createdAt,
+        scheduledRetryAttempt: 0,
+        contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+        updatedAt: createdAt,
+        createdAt,
+      });
+      return runId;
+    };
+
+    // Safety valve: a retry whose predecessor succeeded must not spend budget
+    // (614 of 2591 refused retries had a successful predecessor).
+    const succeededRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: succeededRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "succeeded",
+      finishedAt: minutesAgo(25),
+      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      updatedAt: minutesAgo(25),
+      createdAt: minutesAgo(25),
+    });
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      status: "failed",
+      errorCode: "adapter_failed",
+      retryOfRunId: succeededRunId,
+      scheduledRetryAttempt: 1,
+      scheduledRetryReason: "transient_failure",
+      contextSnapshot: { issueId, wakeReason: "transient_failure_retry" },
+      updatedAt: minutesAgo(20),
+      createdAt: minutesAgo(20),
+    });
+
+    const firstRunId = await failedRun(minutesAgo(30));
+    const secondRunId = await failedRun(minutesAgo(20));
+    const thirdRunId = await failedRun(minutesAgo(10));
+    const fourthRunId = await failedRun(minutesAgo(5));
+
+    for (const runId of [firstRunId, secondRunId, thirdRunId]) {
+      const scheduled = await heartbeat.scheduleBoundedRetry(runId, { now, random: () => 0.5 });
+      expect(scheduled.outcome).toBe("scheduled");
+    }
+
+    const retriesBefore = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "scheduled_retry")))
+      .then((rows) => rows[0]?.count ?? 0);
+    expect(retriesBefore).toBe(3);
+
+    const exhausted = await heartbeat.scheduleBoundedRetry(fourthRunId, { now, random: () => 0.5 });
+    expect(exhausted).toMatchObject({
+      outcome: "retry_exhausted",
+      errorCode: "issue_retry_hourly_budget",
+    });
+
+    const retriesAfter = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "scheduled_retry")))
+      .then((rows) => rows[0]?.count ?? 0);
+    expect(retriesAfter).toBe(retriesBefore);
+
+    const successorOfFourth = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, fourthRunId));
+    expect(successorOfFourth).toEqual([]);
+
+    const wakeups = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, companyId))
+      .then((rows) => rows[0]?.count ?? 0);
+    expect(wakeups).toBe(3);
+
+    const budgetEvent = await db
+      .select({ level: heartbeatRunEvents.level, message: heartbeatRunEvents.message, payload: heartbeatRunEvents.payload })
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, fourthRunId))
+      .orderBy(sql`${heartbeatRunEvents.id} desc`)
+      .then((rows) => rows[0] ?? null);
+    expect(budgetEvent?.level).toBe("warn");
+    expect(budgetEvent?.message).toContain("Hourly retry budget");
+    expect(budgetEvent?.payload).toMatchObject({
+      retryReason: "transient_failure",
+      chainsThisHour: 3,
+      maxChains: 3,
+      budgetReason: "issue_retry_hourly_budget",
+    });
   });
 
   it("advances codex transient fallback stages across bounded retry attempts", async () => {
