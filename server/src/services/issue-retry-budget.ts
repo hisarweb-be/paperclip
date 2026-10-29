@@ -62,3 +62,38 @@ export async function countIssueRetryChainsSince(
   const value = firstRow(rows)?.chains;
   return typeof value === "number" && Number.isFinite(value) ? value : Number(value ?? 0) || 0;
 }
+
+/** HIS-4581 (B): a task with a live scheduled retry already has its successor
+ * queued. The recovery sweep must not stack a second one on top of it (that is
+ * exactly the reopened-chain leak measured on HIS-3686). "Live" uses the same
+ * window as the A1 gate: a retry whose planned start is still inside the
+ * hourly budget is waiting on purpose; past it, the transient-rem plugin
+ * cleans it up and the sweep may queue again. */
+export async function hasLiveScheduledRetry(
+  executor: Executor,
+  input: {
+    /** Scoped like countIssueRetryChainsSince: a retry row of another company
+     * must never be read as this task's live successor. */
+    companyId?: string;
+    agentId: string;
+    issueId: string;
+    now?: Date;
+  },
+): Promise<boolean> {
+  const now = input.now ?? new Date();
+  const since = new Date(now.getTime() - ISSUE_RETRY_HOURLY_BUDGET_WINDOW_MS);
+  const rows = await executor.execute(sql`
+    select w.id
+    from heartbeat_runs w
+    where (${input.companyId ?? null}::uuid is null or w.company_id = ${input.companyId ?? null}::uuid)
+      and w.agent_id = ${input.agentId}
+      and w.status = 'scheduled_retry'
+      and coalesce(
+        w.context_snapshot ->> 'issueId',
+        w.context_snapshot ->> 'taskId'
+      ) = ${input.issueId}
+      and coalesce(w.scheduled_retry_at, w.created_at) >= ${since.toISOString()}::timestamptz
+    limit 1
+  `);
+  return Boolean(firstRow(rows));
+}

@@ -13,6 +13,10 @@ import {
   type RoutineExecutionRunnerResolution,
 } from "../routine-execution-binding.js";
 import { hasLiveLegacyController } from "../legacy-controller-lease.js";
+import {
+  hasLiveScheduledRetry,
+  ISSUE_RETRY_HOURLY_BUDGET_WINDOW_MS,
+} from "../issue-retry-budget.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { isWaitingConversation, settleConversationTurn, deliverConversationComments } from "../agent-conversations.js";
 import {
@@ -1092,6 +1096,16 @@ export function recoveryService(
     issueId: string,
     agentId?: string | null,
   ) {
+    // HIS-4581 (B): a `scheduled_retry` row is only a live execution path
+    // while its retry is still inside the hourly budget. Past that window the
+    // transient-rem plugin cleans the row up, so treating it as active would
+    // skip the task on every sweep and hide it from the handoff lane (and,
+    // transitively, from the escalation that must follow a spent budget).
+    // Same window and column as `hasLiveScheduledRetry` in
+    // ../issue-retry-budget.ts, so the two never disagree.
+    const liveScheduledRetrySince = new Date(
+      Date.now() - ISSUE_RETRY_HOURLY_BUDGET_WINDOW_MS,
+    ).toISOString();
     const [run, deferredWake, nativeRecovery] = await Promise.all([
       db
         .select({ id: heartbeatRuns.id })
@@ -1099,9 +1113,19 @@ export function recoveryService(
         .where(
           and(
             eq(heartbeatRuns.companyId, companyId),
-            inArray(heartbeatRuns.status, [
-              ...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES,
-            ]),
+            sql`(
+              ${heartbeatRuns.status} in (${sql.join(
+                EXECUTION_PATH_HEARTBEAT_RUN_STATUSES.filter(
+                  (status) => status !== "scheduled_retry",
+                ).map((status) => sql`${status}`),
+                sql`, `,
+              )})
+              or (
+                ${heartbeatRuns.status} = 'scheduled_retry'
+                and coalesce(${heartbeatRuns.scheduledRetryAt}, ${heartbeatRuns.createdAt})
+                  >= ${liveScheduledRetrySince}::timestamptz
+              )
+            )`,
             sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
             agentId ? eq(heartbeatRuns.agentId, agentId) : sql`true`,
           ),
@@ -1910,6 +1934,7 @@ export function recoveryService(
 
   async function enqueueStrandedIssueRecovery(input: {
     issueId: string;
+    companyId?: string | null;
     agentId: string;
     reason:
       | "issue_assignment_recovery"
@@ -1927,9 +1952,30 @@ export function recoveryService(
      * because the failed predecessor has spent its bounded transient retry
      * budget. A null return without it means another authority owns the
      * run (native runtime, reconciliation) and the caller must leave it.
+     *
+     * `retryPending` is the opposite signal (HIS-4581 B): a live
+     * `scheduled_retry` on this task is already the successor, so this call
+     * queued nothing on purpose. A caller that would otherwise escalate on a
+     * null must count it as skipped instead; escalating here would block a
+     * task whose retry is still waiting, which is exactly the interference
+     * between the two gates that this change must prevent.
      */
-    outcome?: { retryExhausted?: boolean };
+    outcome?: { retryExhausted?: boolean; retryPending?: boolean };
   }) {
+    // HIS-4581 (B): a live `scheduled_retry` on this task is already the
+    // successor. Stacking a second wake on top reopens the chain the measured
+    // HIS-3686 history shows (10 of 24 retry runs started a fresh chain in the
+    // same task). Same window as the A1 gate, so the two never disagree.
+    if (
+      await hasLiveScheduledRetry(db, {
+        companyId: input.companyId ?? undefined,
+        agentId: input.agentId,
+        issueId: input.issueId,
+      })
+    ) {
+      if (input.outcome) input.outcome.retryPending = true;
+      return null;
+    }
     if (input.retryOfRunId) {
       const [predecessor] = await db
         .select()
@@ -5012,6 +5058,7 @@ export function recoveryService(
 
           const queued = await enqueueStrandedIssueRecovery({
             issueId: issue.id,
+            companyId: issue.companyId,
             agentId,
             reason: "issue_continuation_needed",
             retryReason: "issue_continuation_needed",
@@ -5185,6 +5232,7 @@ export function recoveryService(
         const reviewOutcome: { retryExhausted?: boolean } = {};
         const queued = await enqueueStrandedIssueRecovery({
           issueId: issue.id,
+          companyId: issue.companyId,
           agentId: participantAgentId,
           reason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
           retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
@@ -5308,6 +5356,7 @@ export function recoveryService(
         const dispatchOutcome: { retryExhausted?: boolean } = {};
         const queued = await enqueueStrandedIssueRecovery({
           issueId: issue.id,
+          companyId: issue.companyId,
           agentId,
           reason: "issue_assignment_recovery",
           retryReason: "assignment_recovery",
@@ -5399,17 +5448,27 @@ export function recoveryService(
             result.skipped += 1;
             continue;
           }
+          const handoffOutcome: { retryExhausted?: boolean; retryPending?: boolean } = {};
           const retried = await enqueueStrandedIssueRecovery({
             issueId: issue.id,
+            companyId: issue.companyId,
             agentId,
             reason: "issue_continuation_needed",
             retryReason: "issue_continuation_needed",
             source: "issue.successful_run_handoff_interrupted_retry",
             retryOfRunId: latestRun.id,
+            outcome: handoffOutcome,
           });
           if (retried) {
             result.successfulRunHandoffRetried += 1;
             result.issueIds.push(issue.id);
+            continue;
+          }
+          // HIS-4581 (B): a live `scheduled_retry` already owns the successor.
+          // Escalating here would put a task on `blocked` while its retry is
+          // still waiting, which is the interference this change prevents.
+          if (handoffOutcome.retryPending) {
+            result.skipped += 1;
             continue;
           }
         }
@@ -5487,6 +5546,7 @@ export function recoveryService(
 
         const queued = await enqueueStrandedIssueRecovery({
           issueId: issue.id,
+          companyId: issue.companyId,
           agentId,
           reason: "issue_continuation_needed",
           retryReason: "issue_continuation_needed",
