@@ -754,9 +754,14 @@ describe("issue execution policy routes", () => {
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
       .send({
         status: "todo",
+        // Identical to the stored monitor on purpose: the regression being
+        // guarded is a body that repeats the stored monitor unchanged, so the
+        // old "did the monitor change?" check saw no change and silently
+        // dropped it instead of returning 422.
         executionPolicy: {
           monitor: {
             nextCheckAt: "2026-11-01T12:00:00.000Z",
+            maxAttempts: 3,
             scheduledBy: "assignee",
           },
         },
