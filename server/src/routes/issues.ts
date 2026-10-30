@@ -2177,6 +2177,28 @@ function monitorPoliciesEqual(
   );
 }
 
+// A board client that renders a monitor form rebuilds the whole execution policy
+// from the issue object it holds. If that object predates someone else's reviewer
+// change, the rebuilt policy carries `stages: []` and the PATCH silently removes a
+// stored review stage, so the issue can no longer reach a reviewer. Two bodies are
+// guarded: one that writes the monitor with a different value, and one that leaves
+// `stages` out entirely (a monitor-only write, which the schema would otherwise
+// fill in with an empty list). A body that spells out `stages: []` while echoing
+// the stored monitor unchanged still clears the stages on purpose.
+function preserveStoredStagesOnMonitorWrite(input: {
+  requested: NormalizedExecutionPolicy | null;
+  stored: NormalizedExecutionPolicy | null;
+  stagesProvidedInBody: boolean;
+}) {
+  const { requested, stored, stagesProvidedInBody } = input;
+  if (!requested || !stored) return requested;
+  if (requested.stages.length > 0) return requested;
+  if (stored.stages.length === 0) return requested;
+  if (!stagesProvidedInBody) return { ...requested, stages: stored.stages };
+  if (monitorPoliciesEqual(requested, stored)) return requested;
+  return { ...requested, stages: stored.stages };
+}
+
 function applyActorMonitorScheduledBy(
   policy: NormalizedExecutionPolicy | null,
   actorType: "agent" | "user",
@@ -13263,15 +13285,21 @@ export function issueRoutes(
             actor,
           });
       }
-      if (req.body.executionPolicy !== undefined) {
-        updateFields.executionPolicy = applyActorMonitorScheduledBy(
-          normalizeIssueExecutionPolicy(req.body.executionPolicy),
-          actor.actorType,
-        );
-      }
       const previousExecutionPolicy = normalizeIssueExecutionPolicy(
         existing.executionPolicy ?? null,
       );
+      if (req.body.executionPolicy !== undefined) {
+        updateFields.executionPolicy = applyActorMonitorScheduledBy(
+          preserveStoredStagesOnMonitorWrite({
+            requested: normalizeIssueExecutionPolicy(req.body.executionPolicy),
+            stored: previousExecutionPolicy,
+            stagesProvidedInBody: Array.isArray(
+              (req.body.executionPolicy as { stages?: unknown } | null)?.stages,
+            ),
+          }),
+          actor.actorType,
+        );
+      }
       const nextExecutionPolicy =
         updateFields.executionPolicy !== undefined
           ? (updateFields.executionPolicy as NormalizedExecutionPolicy | null)

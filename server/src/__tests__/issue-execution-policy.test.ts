@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
+import { applyIssueExecutionPolicyTransition, buildIssueMonitorTriggeredPatch, normalizeIssueExecutionPolicy, parseIssueExecutionState, stripMonitorFromExecutionPolicy } from "../services/issue-execution-policy.ts";
 import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
 
 const coderAgentId = "11111111-1111-4111-8111-111111111111";
@@ -1688,6 +1688,102 @@ describe("issue execution policy transitions", () => {
           returnAssignee: { type: "agent", agentId: coderAgentId },
         },
       });
+    });
+  });
+
+  describe("HIS-5991: monitor writes must not silently drop executionPolicy parts", () => {
+    it("keeps stages, reviewPreset, authorizationPolicy and maxReviewRounds when only the monitor is stripped", () => {
+      const policy = normalizeIssueExecutionPolicy({
+        stages: [{ type: "review", participants: [{ type: "agent", agentId: qaAgentId }] }],
+        monitor: {
+          nextCheckAt: "2026-04-11T12:30:00.000Z",
+          notes: "Check deployment",
+          scheduledBy: "board",
+        },
+        reviewPreset: { id: "low_trust_review", version: 1, rawOutputDisposition: "quarantine" },
+        authorizationPolicy: { trustPreset: "low_trust_review" },
+        maxReviewRounds: 3,
+      })!;
+
+      const stripped = stripMonitorFromExecutionPolicy(policy)!;
+      expect(stripped.monitor).toBeUndefined();
+      expect(stripped.stages).toHaveLength(1);
+      expect(stripped.reviewPreset).toMatchObject({ id: "low_trust_review" });
+      expect(stripped.authorizationPolicy).toMatchObject({ trustPreset: "low_trust_review" });
+      expect(stripped.maxReviewRounds).toBe(3);
+    });
+
+    it("keeps a preset-only policy alive when its stages are empty, instead of nulling the whole column", () => {
+      const policy = normalizeIssueExecutionPolicy({
+        stages: [],
+        monitor: {
+          nextCheckAt: "2026-04-11T12:30:00.000Z",
+          scheduledBy: "board",
+        },
+        reviewPreset: { id: "low_trust_review", version: 1, rawOutputDisposition: "quarantine" },
+      })!;
+
+      const stripped = stripMonitorFromExecutionPolicy(policy)!;
+      expect(stripped).not.toBeNull();
+      expect(stripped.stages).toEqual([]);
+      expect(stripped.reviewPreset).toMatchObject({ id: "low_trust_review" });
+    });
+
+    it("still returns null for a bare monitor with no stages and no preset", () => {
+      const policy = normalizeIssueExecutionPolicy({
+        stages: [],
+        monitor: { nextCheckAt: "2026-04-11T12:30:00.000Z", scheduledBy: "board" },
+      })!;
+      expect(stripMonitorFromExecutionPolicy(policy)).toBeNull();
+    });
+
+    it("normalize rejects a review participant without agentId, so the API cannot silently empty a stage", () => {
+      expect(() =>
+        normalizeIssueExecutionPolicy({
+          stages: [{ type: "review", participants: [{ type: "agent", agentId: null }] }],
+          monitor: { nextCheckAt: "2026-04-11T12:30:00.000Z", scheduledBy: "board" },
+        }),
+      ).toThrow("Invalid execution policy");
+    });
+
+    it("a body that sends only a monitor (stages missing) empties the stages, and the strip then nulls the column", () => {
+      const policy = normalizeIssueExecutionPolicy({
+        stages: [],
+        monitor: { nextCheckAt: "2026-04-11T12:30:00.000Z", scheduledBy: "board" },
+      })!;
+      expect(policy.stages).toHaveLength(0);
+      expect(stripMonitorFromExecutionPolicy(policy)).toBeNull();
+    });
+
+    it("a monitor-trigger write keeps the review stage in the persisted policy", () => {
+      const policy = normalizeIssueExecutionPolicy({
+        stages: [{ type: "review", participants: [{ type: "agent", agentId: qaAgentId }] }],
+        monitor: { nextCheckAt: "2026-04-11T12:30:00.000Z", scheduledBy: "assignee" },
+        reviewPreset: { id: "low_trust_review", version: 1, rawOutputDisposition: "quarantine" },
+      })!;
+
+      const patch = buildIssueMonitorTriggeredPatch({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: null,
+          monitorAttemptCount: 0,
+          monitorNextCheckAt: new Date("2026-04-11T12:30:00.000Z"),
+          monitorLastTriggeredAt: null,
+          monitorNotes: null,
+          monitorScheduledBy: "assignee",
+        },
+        policy,
+        triggeredAt: new Date("2026-04-11T12:31:00.000Z"),
+      });
+
+      const persisted = patch.executionPolicy as unknown as IssueExecutionPolicy;
+      expect(persisted.stages).toHaveLength(1);
+      expect(persisted.stages[0].participants[0]).toMatchObject({ type: "agent", agentId: qaAgentId });
+      expect(persisted.reviewPreset).toMatchObject({ id: "low_trust_review" });
+      expect(persisted.monitor).toBeUndefined();
     });
   });
 
