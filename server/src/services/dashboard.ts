@@ -109,6 +109,10 @@ export function dashboardService(db: Db) {
       // created after the run it retries, so ancestors of an out-of-window
       // child are themselves out of window and invisible to the membership
       // test below. Unbounded, the seed walks every run the company ever had.
+      // Recovered membership is a LEFT JOIN on the deduplicated CTE, never an
+      // `IN (SELECT ...)` per row: the subplan form re-scans the CTE once per
+      // run (22k executions, 5+ s on a 44k-row table) while the hash join
+      // stays flat as the run count grows.
       const runActivityRows = (await db.execute(sql`
         WITH RECURSIVE recovered_runs(id) AS (
           SELECT parent.id
@@ -128,12 +132,13 @@ export function dashboardService(db: Db) {
           to_char(run.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS date,
           run.status AS status,
           run.error_code AS error_code,
-          (run.id IN (SELECT id FROM recovered_runs)) AS recovered,
+          (rec.id IS NOT NULL) AS recovered,
           count(*)::double precision AS count
         FROM ${heartbeatRuns} AS run
+        LEFT JOIN (SELECT DISTINCT id FROM recovered_runs) AS rec ON rec.id = run.id
         WHERE run.company_id = ${companyId}
           AND run.created_at >= ${runActivityStart.toISOString()}::timestamptz
-        GROUP BY date, run.status, run.error_code, recovered
+        GROUP BY date, run.status, run.error_code, rec.id IS NOT NULL
       `)) as unknown as Iterable<{
         date: string;
         status: string;
