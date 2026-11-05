@@ -1841,6 +1841,34 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       return result;
     },
 
+    /**
+     * Records the review disposition for a watchdog review issue at the moment
+     * that issue reaches a terminal status. The round-based path
+     * (`evaluateWatchdog`) only writes this at the start of a following round,
+     * so a review card that closes without another round would never be
+     * recorded and `already_reviewed` damping would not apply (HIS-5952).
+     *
+     * Must run after the issue transition commits: `markTerminalWatchdogIssueReviewed`
+     * re-reads the card from the database and would still see the previous
+     * status inside the transaction.
+     */
+    recordTerminalReviewDisposition: async (
+      companyId: string,
+      watchdogIssueId: string,
+      opts: { runId?: string | null } = {},
+    ) => {
+      const row = await db
+        .select()
+        .from(issueWatchdogs)
+        .where(and(
+          eq(issueWatchdogs.companyId, companyId),
+          eq(issueWatchdogs.watchdogIssueId, watchdogIssueId),
+        ))
+        .then((rows: IssueWatchdogRow[]) => rows[0] ?? null);
+      if (!row) return null;
+      return markTerminalWatchdogIssueReviewed(row, { runId: opts.runId ?? null });
+    },
+
     revalidateMutationScope,
   };
 }
