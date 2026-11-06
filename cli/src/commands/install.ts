@@ -287,6 +287,15 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
         maxBuffer: 32 * 1024 * 1024,
       });
     }
+    const repositorySkills = path.join(checkoutPath, "skills");
+    for (const workspacePackage of workspacePackages) {
+      const packageDir = path.join(checkoutPath, workspacePackage.dir);
+      const packageJson = JSON.parse(fs.readFileSync(path.join(packageDir, "package.json"), "utf8")) as { files?: string[] };
+      const packageSkills = path.join(packageDir, "skills");
+      if (packageJson.files?.includes("skills") && !fs.existsSync(packageSkills)) {
+        fs.cpSync(repositorySkills, packageSkills, { recursive: true });
+      }
+    }
     for (const [index, workspacePackage] of workspacePackages.entries()) {
       const packageDir = path.join(checkoutPath, workspacePackage.dir);
       const packageJson = JSON.parse(fs.readFileSync(path.join(packageDir, "package.json"), "utf8")) as { bundleDependencies?: string[]; bundledDependencies?: string[] };
