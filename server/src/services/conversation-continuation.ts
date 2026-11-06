@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { readProcessStartedAt } from "./hot-restart.js";
 
@@ -121,7 +121,15 @@ export async function getConversationOwnershipBlocker(db: Db, companyId: string,
     .where(and(
       eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.runtimeMode, "legacy"),
       conversationRunPredicate(),
-      sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueId}`,
+      // `coalesce(native_issue_id::text, context_snapshot->>'issueId') = $1` is not sargable: the
+      // coalesce and the text cast hide both columns from the planner, so this ran as a Parallel
+      // Seq Scan over the whole table on every conversation turn (measured on bureau-01, 6 nov 2026:
+      // 498.970 ms, 17 563 rows removed by filter). Split into the two indexable halves; the
+      // semantics are identical because `native_issue_id` is null in exactly the second branch.
+      or(
+        eq(heartbeatRuns.nativeIssueId, issueId),
+        and(isNull(heartbeatRuns.nativeIssueId), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`),
+      ),
       inArray(heartbeatRuns.status, ["failed", "timed_out", "interrupted", "cancelled"]),
       or(isNotNull(heartbeatRuns.processPid), isNotNull(heartbeatRuns.processGroupId), activeLease),
     )).orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id));
