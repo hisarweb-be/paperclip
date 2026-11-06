@@ -114,12 +114,14 @@ describe("managed install commands", () => {
         const packages = [
           { dir: "packages/shared", name: "@paperclipai/shared", packageJson: { name: "@paperclipai/shared", version: "0.3.1" } },
           { dir: "packages/db", name: "@paperclipai/db", packageJson: { name: "@paperclipai/db", version: "0.3.1", dependencies: { "@paperclipai/shared": "workspace:*" }, bundleDependencies: ["embedded-postgres"] } },
-          { dir: "server", name: "@paperclipai/server", packageJson: { name: "@paperclipai/server", version: "0.3.1", dependencies: { "@paperclipai/db": "workspace:*" } } },
+          { dir: "server", name: "@paperclipai/server", packageJson: { name: "@paperclipai/server", version: "0.3.1", files: ["skills"], dependencies: { "@paperclipai/db": "workspace:*" } } },
         ];
         fs.mkdirSync(path.join(checkout, "cli"), { recursive: true });
         fs.writeFileSync(path.join(checkout, "cli", "package.json"), JSON.stringify({ version: "0.3.1" }));
         fs.mkdirSync(path.join(checkout, "scripts"), { recursive: true });
         fs.writeFileSync(path.join(checkout, "scripts", "release-package-manifest.json"), JSON.stringify(packages.map(({ dir, name }) => ({ dir, name }))));
+        fs.mkdirSync(path.join(checkout, "skills"), { recursive: true });
+        fs.writeFileSync(path.join(checkout, "skills", "README.md"), "skills");
         for (const workspacePackage of packages) {
           fs.mkdirSync(path.join(checkout, workspacePackage.dir), { recursive: true });
           fs.writeFileSync(path.join(checkout, workspacePackage.dir, "package.json"), JSON.stringify(workspacePackage.packageJson));
@@ -151,6 +153,7 @@ describe("managed install commands", () => {
       if (file === "npm" && args[0] === "install") { const prefix = args[args.indexOf("--prefix") + 1]; const packageRoot = path.join(prefix, "node_modules", "paperclipai"); fs.mkdirSync(path.join(packageRoot, "dist"), { recursive: true }); fs.writeFileSync(path.join(packageRoot, "package.json"), JSON.stringify({ version: "0.3.1" })); fs.writeFileSync(path.join(packageRoot, "dist", "index.js"), "#!/usr/bin/env node\n"); return { stdout: "", stderr: "" }; }
       if (file === process.execPath && args[0]?.endsWith("prepare-bundled-package.mjs")) {
         expect(fs.existsSync(path.join(options?.cwd as string, "server", "ui-dist", "index.html"))).toBe(true);
+        expect(fs.existsSync(path.join(options?.cwd as string, "server", "skills", "README.md"))).toBe(true);
         fs.mkdirSync(args[2], { recursive: true });
         fs.writeFileSync(path.join(args[2], "package.json"), JSON.stringify({ name: "@paperclipai/db", version: "0.3.1" }));
         return { stdout: "", stderr: "" };
