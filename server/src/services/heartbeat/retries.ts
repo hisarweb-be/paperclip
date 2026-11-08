@@ -1008,11 +1008,16 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
 
         // HIS-4580: at most three automatic retries per (agent, task) per hour,
         // counted across fresh chains, so a task cannot loop on retries.
-        if (issueId) {
+        // Upstream binds `issueId` only for issue-scoped runs; the budget is a
+        // read-only cap, so it also keys on the context task that the counter
+        // matches on, or a legacy-scoped run would never be capped.
+        const budgetIssueId =
+          issueId ?? readNonEmptyString(contextSnapshot.issueId);
+        if (budgetIssueId) {
           const chainsThisHour = await countIssueRetryChainsSince(tx, {
             companyId: run.companyId,
             agentId: run.agentId,
-            issueId,
+            issueId: budgetIssueId,
             since: new Date(now.getTime() - ISSUE_RETRY_HOURLY_BUDGET_WINDOW_MS),
           });
           if (chainsThisHour >= ISSUE_RETRY_HOURLY_BUDGET_MAX_CHAINS) {
@@ -1020,9 +1025,9 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
               outcome: "retry_exhausted",
               reason: `Hourly retry budget for this task is spent (${chainsThisHour}/${ISSUE_RETRY_HOURLY_BUDGET_MAX_CHAINS} retries in the last hour); no further automatic retry will be queued`,
               errorCode: "issue_retry_hourly_budget",
-              issueId,
+              issueId: budgetIssueId,
               details: {
-                issueId,
+                issueId: budgetIssueId,
                 agentId: run.agentId,
                 retryReason,
                 chainsThisHour,

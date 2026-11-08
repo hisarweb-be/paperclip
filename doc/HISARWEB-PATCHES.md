@@ -38,6 +38,7 @@ shipped yet; once applied anywhere its file name and content stay fixed.
 | 22 | feat(db): migration 0375 with the hand-built production read indexes | Six indexes that production carried by hand (`plugins/bureau-server/db-index.sh`) become migration `0375_hisarweb_patches`, idempotent and concurrent. | HIS-5846 and the 7 Nov DB load measurements | `packages/db/src/hisarweb-patches-index-migration.test.ts` | nog |
 | 23 | docs: HisarWeb patch register and upstream PR table | This file and doc/UPSTREAM-PRS.md. | | | not offered (fork only) |
 | 24 | test: finish the cancelRun expectation of HIS-4483 and run the HIS-2579 suite on vitest 5 | Test follow-up for rows 11 and 9: the superseded-retry test asserts the full `cancelRun` arguments, and the HIS-2579 suite uses `describe` (vitest 5 has no `describe.sequential`). No runtime change. | HIS-4483, HIS-2579 | `issue-comment-reopen-routes.test.ts`, `issue-heartbeat-context-execution-review.test.ts` | nog |
+| 25 | fix(heartbeat): key the HIS-4580 hourly retry budget on the context task when the run is not issue-scoped | Follow-up for row 19: v2026.1106.0 binds a retry's `issueId` only for issue-scoped runs, so the cap was skipped for every legacy-scoped run. The budget is read-only and now falls back to `contextSnapshot.issueId`, the key its counter already matches on. | HIS-4580 | `server/src/__tests__/heartbeat-retry-scheduling.test.ts` ("bounds automatic retries per agent and task to three per hour") | nog |
 
 ## Fork commits per row
 
@@ -66,6 +67,7 @@ shipped yet; once applied anywhere its file name and content stay fixed.
 | 21 | 6a7d72c92f |
 | 22 | none (replaces the manual `db-index.sh` step; see migration plan) |
 | 24 | none (follow-up of rows 9 and 11 found by the branch test run) |
+| 25 | none (follow-up of row 19 found by the branch test run) |
 
 ## Production patches (pleisters) these commits replace
 
