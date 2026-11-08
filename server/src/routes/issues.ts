@@ -79,6 +79,8 @@ import {
 } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
+  updateIssueCommentSchema,
+  type UpdateIssueComment,
   acceptIssueThreadInteractionSchema,
   resolveConfirmationFromCommentSchema,
   attachmentArtifactWorkProductMetadataSchema,
@@ -17889,6 +17891,152 @@ export function issueRoutes(
       await runRedactions.redactForIssue(issue.companyId, issue.id, comment),
     );
   });
+
+  // Edit an issue comment.
+  // Authorization: only a board user with a user identity may edit, and only a
+  // comment they authored themselves (authorUserId === req.actor.userId); agent
+  // comments are never editable here. The issue must pass the regular comment
+  // access check. A comment of another issue is 404, a deleted comment is 409.
+  // The previous body stays in the activity log (issue.comment_edited). When the
+  // text changed and `wake` is not false, the assignee agent is woken again
+  // (`interrupt` first cancels its active run); a failed wakeup is logged and
+  // never rolls back the saved edit.
+  router.patch(
+    "/issues/:id/comments/:commentId",
+    validate(updateIssueCommentSchema),
+    async (req, res) => {
+      assertBoard(req);
+      const userId = req.actor.userId;
+      if (!userId) throw forbidden("Board user context required");
+      const id = req.params.id as string;
+      const commentId = req.params.commentId as string;
+      const issue = await getAccessibleResource(
+        req,
+        res,
+        svc.getById(id),
+        "Issue not found",
+      );
+      if (!issue) return;
+      if (!(await assertAgentIssueCommentAllowed(req, res, issue))) return;
+
+      const comment = await svc.getComment(commentId);
+      if (!comment || comment.issueId !== id) {
+        res.status(404).json({ error: "Comment not found" });
+        return;
+      }
+      if (comment.authorAgentId || comment.authorUserId !== userId) {
+        throw forbidden("Only the author can edit this comment");
+      }
+      if (comment.deletedAt) throw conflict("A deleted comment cannot be edited");
+
+      const { body, wake, interrupt } = req.body as UpdateIssueComment;
+      const actor = getActorInfo(req);
+      let wokenRunId: string | null = null;
+      let interruptedRunId: string | null = null;
+      if (body !== comment.body.trim()) {
+        const saved = await svc.updateComment(comment.id, body);
+        if (!saved) throw conflict("A deleted comment cannot be edited");
+        await issueReferencesSvc.syncComment(comment.id);
+        await externalObjectsSvc.syncCommentSafely(comment.id);
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: "issue.comment_edited",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            commentId: comment.id,
+            identifier: issue.identifier,
+            bodySnippet: body.slice(0, 120),
+            previousBody: comment.body.slice(0, 4000),
+          },
+        });
+
+        const agentId = issue.assigneeAgentId;
+        if (
+          wake &&
+          agentId &&
+          !["done", "cancelled"].includes(issue.status) &&
+          !(await treeControlSvc.getActivePauseHoldGate(issue.companyId, issue.id))
+        ) {
+          // The edit is already saved: a failed interrupt or wakeup is only logged.
+          try {
+            if (interrupt) {
+              const active = await resolveActiveIssueRun(issue);
+              if (active) {
+                const cancelled = await heartbeat.cancelRun(
+                  active.id,
+                  "Interrupted by edited board comment",
+                  operatorInterruptCancelOptions({ issueId: issue.id, actor }),
+                );
+                if (cancelled) {
+                  interruptedRunId = cancelled.id;
+                  await logActivity(db, {
+                    companyId: cancelled.companyId,
+                    actorType: actor.actorType,
+                    actorId: actor.actorId,
+                    agentId: actor.agentId,
+                    runId: actor.runId,
+                    agentApiKeyId: actor.agentApiKeyId,
+                    action: "heartbeat.cancelled",
+                    entityType: "heartbeat_run",
+                    entityId: cancelled.id,
+                    issueId: issue.id,
+                    details: {
+                      agentId: cancelled.agentId,
+                      source: "issue_comment_edit_interrupt",
+                      issueId: issue.id,
+                      cancellationKind: "operator_interrupted",
+                      operatorInterrupted: true,
+                    },
+                  });
+                }
+              }
+            }
+            const run = await heartbeat.wakeup(agentId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "issue_commented",
+              payload: {
+                issueId: issue.id,
+                commentId: comment.id,
+                mutation: "comment_edited",
+                ...(interruptedRunId ? { interruptedRunId } : {}),
+              },
+              requestedByActorType: actor.actorType,
+              requestedByActorId: actor.actorId,
+              contextSnapshot: {
+                issueId: issue.id,
+                taskId: issue.id,
+                commentId: comment.id,
+                wakeCommentId: comment.id,
+                source: "issue.comment.edited",
+                wakeReason: "issue_commented",
+                commentEdited: true,
+                ...(interruptedRunId ? { interruptedRunId } : {}),
+              },
+            });
+            wokenRunId = run?.id ?? null;
+          } catch (err) {
+            logger.warn(
+              { err, issueId: issue.id, commentId: comment.id },
+              "failed to wake the assignee after an edited comment",
+            );
+          }
+        }
+      }
+
+      const current = (await svc.getComment(comment.id)) ?? comment;
+      res.json({
+        ...(await runRedactions.redactForIssue(issue.companyId, issue.id, current)),
+        wakeup: { runId: wokenRunId, interruptedRunId },
+      });
+    },
+  );
 
   router.delete("/issues/:id/comments/:commentId", async (req, res) => {
     const id = req.params.id as string;

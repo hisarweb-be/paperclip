@@ -1126,6 +1126,23 @@ export const addIssueCommentSchema = z.object({
 
 export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;
 
+export const ISSUE_COMMENT_EDIT_BODY_MAX_LENGTH = 100_000;
+
+/**
+ * Body of PATCH /issues/:id/comments/:commentId. The new text is trimmed and
+ * must not be empty. `wake` (default true) re-wakes the assignee agent when the
+ * text changed; `interrupt` (default false) first cancels its active run.
+ */
+export const updateIssueCommentSchema = z.object({
+  body: multilineTextSchema.pipe(
+    z.string().trim().min(1, "Comment body must not be empty").max(ISSUE_COMMENT_EDIT_BODY_MAX_LENGTH),
+  ),
+  wake: z.boolean().optional().default(true),
+  interrupt: z.boolean().optional().default(false),
+});
+
+export type UpdateIssueComment = z.infer<typeof updateIssueCommentSchema>;
+
 export const issueThreadInteractionStatusSchema = z.enum(
   ISSUE_THREAD_INTERACTION_STATUSES,
 );
