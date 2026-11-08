@@ -12,6 +12,7 @@ vi.mock("../services/execution-blocker.js", () => ({
 }));
 
 const mockIssueService = vi.hoisted(() => ({
+  listBlockerAttention: vi.fn(async () => new Map()),
   getById: vi.fn(),
   getByIdForUpdate: vi.fn(),
   assertCheckoutOwner: vi.fn(),
