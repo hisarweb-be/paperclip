@@ -3148,13 +3148,16 @@ describe("agent issue mutation checkout ownership", () => {
       expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
     });
 
+    // HIS-3492: only a run that never started is stopped on reassignment; a
+    // started run is handed over (see the started-run variant below).
     it.each(["board", "agent_key", "other_run", "native", "other_issue", "other_agent", "other_company"])(
-      "still requires a verified stop for %s reassignment", async scenario => {
+      "still requires a verified stop of a never-started run for %s reassignment", async scenario => {
         let actor: Record<string, unknown> = { ...ownerActor(), source: "agent_jwt" };
         if (scenario === "board") actor = boardActor();
         if (scenario === "agent_key") actor = ownerActor();
         const run = {
           ...runningRun,
+          status: "queued",
           ...(scenario === "other_run" ? { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" } : {}),
           ...(scenario === "native" ? { runtimeMode: "native" } : {}),
           ...(scenario === "other_issue" ? { contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" } } : {}),
@@ -3173,7 +3176,30 @@ describe("agent issue mutation checkout ownership", () => {
       },
     );
 
-    it.each(["agent", "unassigned"])("still stops the outgoing run before an %s handoff", async target => {
+    it.each(["board", "agent_key", "other_run", "native", "other_issue", "other_agent", "other_company"])(
+      "hands a started run over for %s reassignment instead of stopping it (HIS-3492)", async scenario => {
+        let actor: Record<string, unknown> = { ...ownerActor(), source: "agent_jwt" };
+        if (scenario === "board") actor = boardActor();
+        if (scenario === "agent_key") actor = ownerActor();
+        mockHeartbeatService.getRun.mockResolvedValue({
+          ...runningRun,
+          ...(scenario === "other_run" ? { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" } : {}),
+          ...(scenario === "native" ? { runtimeMode: "native" } : {}),
+          ...(scenario === "other_issue" ? { contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" } } : {}),
+          ...(scenario === "other_agent" ? { agentId: peerAgentId } : {}),
+          ...(scenario === "other_company" ? { companyId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" } : {}),
+        });
+
+        const res = await request(handoffApp(actor)).patch(`/api/issues/${issueId}`).send(handoff);
+
+        expect(res.status, JSON.stringify(res.body)).toBe(200);
+        expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+        expect(mockIssueService.update).toHaveBeenCalled();
+      },
+    );
+
+    it.each(["agent", "unassigned"])("still stops a never-started outgoing run before an %s handoff", async target => {
+      mockHeartbeatService.getRun.mockResolvedValue({ ...runningRun, status: "queued" });
       const res = await request(handoffApp({ ...ownerActor(), source: "agent_jwt" }))
         .patch(`/api/issues/${issueId}`).send({
           assigneeAgentId: target === "agent" ? peerAgentId : null,
