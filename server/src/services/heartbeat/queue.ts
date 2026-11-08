@@ -137,6 +137,7 @@ import {
   ISSUE_REWAKE_RUN_SAMPLE_LIMIT,
   evaluateIssueRewakeThrottle,
   isThrottleCandidateIssueRewake,
+  readFutureMonitorRewakeCooldownMs,
   readOpenBlockerRewakeCooldownMs,
 } from "../issue-rewake-throttle.js";
 import { logActivity } from "../activity-log.js";
@@ -4031,6 +4032,13 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 openBlockerCooldownMs: issueHasOpenBlocker
                   ? openBlockerCooldownMs
                   : null,
+                // Optional (off unless configured): a future monitor check will
+                // wake the agent anyway, so state wakes before it are held back.
+                futureMonitorCooldownMs:
+                  issue.monitorNextCheckAt &&
+                  issue.monitorNextCheckAt.getTime() > throttleNow.getTime()
+                    ? readFutureMonitorRewakeCooldownMs()
+                    : null,
               });
 
               if (throttleDecision.blocked) {
