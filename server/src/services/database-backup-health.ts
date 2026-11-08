@@ -1,4 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { readdir, stat } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 
 export type DatabaseBackupHealthWarningCode =
@@ -78,7 +79,28 @@ function readLastFailure(alertFiles: string[]) {
   };
 }
 
-function findLatestBackup(backupDir: string, nowMs: number) {
+type RawLatestBackup = {
+  name: string;
+  path: string;
+  mtimeMs: number;
+  sizeBytes: number;
+};
+
+function toLatestBackup(
+  raw: RawLatestBackup | null,
+  nowMs: number,
+): DatabaseBackupHealthStatus["latestBackup"] {
+  if (!raw) return null;
+  return {
+    name: raw.name,
+    path: raw.path,
+    mtime: new Date(raw.mtimeMs).toISOString(),
+    ageHours: roundHours((nowMs - raw.mtimeMs) / 3_600_000),
+    sizeBytes: raw.sizeBytes,
+  };
+}
+
+function scanLatestBackupSync(backupDir: string): RawLatestBackup | null {
   if (!existsSync(backupDir)) return null;
 
   const candidates = readdirSync(backupDir)
@@ -96,11 +118,103 @@ function findLatestBackup(backupDir: string, nowMs: number) {
   return {
     name: basename(latest.fullPath),
     path: latest.fullPath,
-    mtime: new Date(latest.stat.mtimeMs).toISOString(),
-    ageHours: roundHours((nowMs - latest.stat.mtimeMs) / 3_600_000),
+    mtimeMs: latest.stat.mtimeMs,
     sizeBytes: latest.stat.size,
   };
 }
+
+function isMissingFileError(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException | null)?.code === "ENOENT";
+}
+
+// Stats one file at a time so a large backup directory on a slow mount does not
+// flood the libuv thread pool. Files removed between readdir and stat are skipped.
+async function scanLatestBackup(backupDir: string): Promise<RawLatestBackup | null> {
+  let names: string[];
+  try {
+    names = await readdir(backupDir);
+  } catch (error) {
+    if (isMissingFileError(error)) return null;
+    throw error;
+  }
+
+  let latest: RawLatestBackup | null = null;
+  for (const name of names) {
+    if (!name.endsWith(".sql.gz")) continue;
+    const fullPath = join(backupDir, name);
+    let fileStat;
+    try {
+      fileStat = await stat(fullPath);
+    } catch (error) {
+      if (isMissingFileError(error)) continue;
+      throw error;
+    }
+    if (!latest || fileStat.mtimeMs > latest.mtimeMs) {
+      latest = { name, path: fullPath, mtimeMs: fileStat.mtimeMs, sizeBytes: fileStat.size };
+    }
+  }
+  return latest;
+}
+
+/** Minimum time between background rescans of a backup directory. */
+export const LATEST_BACKUP_CACHE_TTL_MS = 60_000;
+
+export type LatestBackupFinderOptions = {
+  ttlMs?: number;
+  /** Clock used for cache expiry; independent of the `nowMs` used for backup age. */
+  clock?: () => number;
+};
+
+type LatestBackupCacheEntry = {
+  raw: RawLatestBackup | null;
+  refreshedAt: number;
+  refreshing: boolean;
+};
+
+/**
+ * Returns a latest-backup lookup that scans synchronously only on the first call per
+ * directory. Later calls are served from a cache that is refreshed in the background at
+ * most once per `ttlMs`, so health requests no longer block the event loop on a
+ * readdir plus a stat of every backup file. Age is recomputed from `nowMs` on every
+ * call. A failed refresh drops the cache entry, so the next call scans synchronously
+ * again and surfaces the error.
+ */
+export function createLatestBackupFinder(opts: LatestBackupFinderOptions = {}) {
+  const ttlMs = opts.ttlMs ?? LATEST_BACKUP_CACHE_TTL_MS;
+  const clock = opts.clock ?? Date.now;
+  const cache = new Map<string, LatestBackupCacheEntry>();
+
+  const refresh = (backupDir: string, entry: LatestBackupCacheEntry) => {
+    entry.refreshing = true;
+    void scanLatestBackup(backupDir)
+      .then(
+        (raw) => {
+          if (cache.get(backupDir) !== entry) return;
+          entry.raw = raw;
+          entry.refreshedAt = clock();
+        },
+        () => {
+          if (cache.get(backupDir) === entry) cache.delete(backupDir);
+        },
+      )
+      .finally(() => {
+        entry.refreshing = false;
+      });
+  };
+
+  return function findLatestBackup(backupDir: string, nowMs: number) {
+    let entry = cache.get(backupDir);
+    if (!entry) {
+      entry = { raw: scanLatestBackupSync(backupDir), refreshedAt: clock(), refreshing: false };
+      cache.set(backupDir, entry);
+    } else if (!entry.refreshing && clock() - entry.refreshedAt >= ttlMs) {
+      refresh(backupDir, entry);
+    }
+    return toLatestBackup(entry.raw, nowMs);
+  };
+}
+
+const findLatestBackup = createLatestBackupFinder();
 
 export function inspectDatabaseBackupHealth(
   opts: InspectDatabaseBackupHealthOptions,
