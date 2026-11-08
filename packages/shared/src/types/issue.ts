@@ -700,6 +700,12 @@ export interface IssueRelatedWorkItem {
 export interface IssueRelatedWorkSummary {
   outbound: IssueRelatedWorkItem[];
   inbound: IssueRelatedWorkItem[];
+  /** Total number of outbound items before any response-size limit was applied. */
+  outboundTotal?: number;
+  /** Total number of inbound items before any response-size limit was applied. */
+  inboundTotal?: number;
+  /** True when items or per-item sources were omitted to keep the response bounded. */
+  truncated?: boolean;
 }
 
 export interface IssueExecutionStagePrincipal {

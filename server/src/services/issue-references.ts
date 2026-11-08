@@ -445,3 +445,52 @@ export function issueReferenceService(db: Db) {
     emptySummary,
   };
 }
+
+/** Maximum related-work items returned per direction by the issue detail route. */
+export const ISSUE_RELATED_WORK_MAX_ITEMS = 50;
+/** Maximum reference sources returned per related-work item by the issue detail route. */
+export const ISSUE_RELATED_WORK_MAX_SOURCES = 5;
+
+export type LimitedIssueRelatedWork<TItem> = {
+  outbound: TItem[];
+  inbound: TItem[];
+  outboundTotal: number;
+  inboundTotal: number;
+  truncated: boolean;
+};
+
+/**
+ * Bounds a related-work summary for read responses. Heavily cross-referenced issues
+ * (hundreds of linked issues with thousands of mentions) otherwise produce responses of
+ * hundreds of kilobytes on every issue read. Items keep their existing order (most
+ * mentioned first) and their real mentionCount; only the item list and the per-item
+ * sources are cut. Totals and a truncated flag let clients tell that data was omitted.
+ *
+ * Generic over the item type so it also accepts summaries whose issues were redacted
+ * to locked stubs; items without a sources array are passed through unchanged.
+ */
+export function limitIssueRelatedWork<TItem extends object = IssueRelatedWorkItem>(
+  summary: { outbound: TItem[]; inbound: TItem[] },
+  maxItems = ISSUE_RELATED_WORK_MAX_ITEMS,
+  maxSources = ISSUE_RELATED_WORK_MAX_SOURCES,
+): LimitedIssueRelatedWork<TItem> {
+  let truncated = false;
+  const limit = (items: TItem[]): TItem[] => {
+    if (items.length > maxItems) truncated = true;
+    return items.slice(0, maxItems).map((item) => {
+      const sources = (item as { sources?: unknown }).sources;
+      if (!Array.isArray(sources) || sources.length <= maxSources) return item;
+      truncated = true;
+      return { ...item, sources: sources.slice(0, maxSources) };
+    });
+  };
+  const outbound = limit(summary.outbound);
+  const inbound = limit(summary.inbound);
+  return {
+    outbound,
+    inbound,
+    outboundTotal: summary.outbound.length,
+    inboundTotal: summary.inbound.length,
+    truncated,
+  };
+}
