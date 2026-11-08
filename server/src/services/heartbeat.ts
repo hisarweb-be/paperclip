@@ -34,7 +34,7 @@ import {
   formatIssueIdentifierLink,
 } from "./heartbeat/scheduling.js";
 import { canApplyTaskWorkspaceSelectionAtAdmission, taskWorkspaceRuntimeSelectionEnabled } from "./execution-workspace-policy.js";
-import { agentExecutionsHaveStopped } from "./agent-execution-stop.js";
+import { agentExecutionsHaveStopped, runsWithPossibleExecutionAuthority } from "./agent-execution-stop.js";
 import {
   cancelHeartbeatNativeRun,
   terminateHeartbeatRunProcess,
@@ -3957,13 +3957,18 @@ export function heartbeatService(
 
   async function stopInvocationsForAgents(agentIds: string[], reason: string) {
     await cancelInvocationsForAgentsInternal(agentIds, reason);
-    const runs = await db.select().from(heartbeatRuns).where(inArray(heartbeatRuns.agentId, agentIds));
     const leasesToRelease = await db.select({ runId: environmentLeases.heartbeatRunId }).from(environmentLeases)
       .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, environmentLeases.heartbeatRunId))
       .where(and(inArray(heartbeatRuns.agentId, agentIds),
         or(and(eq(heartbeatRuns.status, "cancelled"), inArray(environmentLeases.status, ["active", "pending_cleanup"])),
           and(eq(environmentLeases.status, "retained"), eq(environmentLeases.cleanupStatus, "failed")))));
-    const needsRelease = new Set(leasesToRelease.map(lease => lease.runId));
+    const needsRelease = new Set(leasesToRelease.flatMap(lease => lease.runId ? [lease.runId] : []));
+    // Old terminal runs are skipped unless this process still tracks them or
+    // their leases still need cleanup.
+    const runs = await db.select().from(heartbeatRuns).where(runsWithPossibleExecutionAuthority(db, agentIds, {
+      includeRunIds: [...needsRelease, ...runningProcesses.keys(), ...activeRunExecutions,
+        ...adapterExecutionControls.keys(), ...processRunCancellationSettlements.keys()],
+    }));
     for (const run of runs) {
       if (!isHeartbeatRunTerminalStatus(run.status) || liveRunExecutions.has(run.id) ||
           adapterExecutionControls.has(run.id) || processRunCancellationSettlements.has(run.id) ||
