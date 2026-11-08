@@ -202,15 +202,75 @@ export async function loadExternalAdapterPackage(
   return adapterModule;
 }
 
-async function loadFromRecord(record: AdapterPluginRecord): Promise<ServerAdapterModule | null> {
-  try {
-    return await loadExternalAdapterPackage(record.packageName, record.localPath);
-  } catch (err) {
+/**
+ * Wall-clock budget for loading one external adapter package at startup.
+ *
+ * A package entry point can never settle (a top-level await that never
+ * resolves, a stuck network filesystem). Startup awaits the whole load pass
+ * through `waitForExternalAdapters()`, so without a budget the server stays in
+ * startupRecovery phase "recovering" for the life of the process and health
+ * keeps reporting "starting". A package that overruns this budget is skipped
+ * and reported, and the pass always returns.
+ */
+export const DEFAULT_EXTERNAL_ADAPTER_LOAD_TIMEOUT_MS = 10_000;
+
+class ExternalAdapterLoadTimeoutError extends Error {
+  constructor(
+    readonly packageName: string,
+    readonly timeoutMs: number,
+  ) {
+    super(`External adapter "${packageName}" did not finish loading within ${timeoutMs}ms`);
+    this.name = "ExternalAdapterLoadTimeoutError";
+  }
+}
+
+function resolveLoadTimeoutMs(timeoutMs: number | undefined): number {
+  if (timeoutMs === undefined) return DEFAULT_EXTERNAL_ADAPTER_LOAD_TIMEOUT_MS;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     logger.warn(
-      { err, packageName: record.packageName, type: record.type },
-      "Failed to dynamically load external adapter; skipping",
+      { timeoutMs, fallbackMs: DEFAULT_EXTERNAL_ADAPTER_LOAD_TIMEOUT_MS },
+      "Invalid external adapter load timeout; using the default",
     );
+    return DEFAULT_EXTERNAL_ADAPTER_LOAD_TIMEOUT_MS;
+  }
+  return timeoutMs;
+}
+
+async function loadFromRecord(
+  record: AdapterPluginRecord,
+  timeoutMs: number,
+): Promise<ServerAdapterModule | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new ExternalAdapterLoadTimeoutError(record.packageName, timeoutMs));
+    }, timeoutMs);
+    // Never keep the process (or a test run) alive for a pending budget.
+    (timer as { unref?: () => void }).unref?.();
+  });
+
+  try {
+    const load = loadExternalAdapterPackage(record.packageName, record.localPath);
+    // The import may settle after the budget elapsed. Attach a handler right
+    // away so that late failure is consumed instead of surfacing as an
+    // unhandled rejection.
+    load.catch(() => {});
+    return await Promise.race([load, timedOut]);
+  } catch (err) {
+    if (err instanceof ExternalAdapterLoadTimeoutError) {
+      logger.warn(
+        { packageName: record.packageName, type: record.type, timeoutMs },
+        "External adapter load timed out; skipping it so startup can finish",
+      );
+    } else {
+      logger.warn(
+        { err, packageName: record.packageName, type: record.type },
+        "Failed to dynamically load external adapter; skipping",
+      );
+    }
     return null;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -269,13 +329,20 @@ export async function reloadExternalAdapter(
 
 /**
  * Build all external adapter modules from the plugin store.
+ *
+ * Each package gets `timeoutMs` of wall-clock time. A package that overruns it
+ * is skipped with a warning and the pass continues with the next one, so this
+ * function always returns and startup recovery can reach the "ready" phase.
  */
-export async function buildExternalAdapters(): Promise<ServerAdapterModule[]> {
+export async function buildExternalAdapters(options?: {
+  timeoutMs?: number;
+}): Promise<ServerAdapterModule[]> {
   const results: ServerAdapterModule[] = [];
+  const timeoutMs = resolveLoadTimeoutMs(options?.timeoutMs);
 
   const storeRecords = listAdapterPlugins();
   for (const record of storeRecords) {
-    const adapter = await loadFromRecord(record);
+    const adapter = await loadFromRecord(record, timeoutMs);
     if (adapter) {
       results.push(adapter);
     }
