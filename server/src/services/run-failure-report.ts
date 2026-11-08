@@ -15,6 +15,7 @@ import { readConnectionFailure, type ConnectionFailure } from "@paperclipai/adap
 import { isAiConnectionConfigurationReason } from "./ai-connection-configuration-failure.js";
 import { readRunFailureReportingMode, type RunFailureReportingMode } from "../sentry-run-failure-policy.js";
 import { RESTRICTED_WORKSPACE_SOURCE_REASON } from "./workspace-source-restriction.js";
+import { isLeaseCancelledRun } from "./recovery/run-outcome.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 
@@ -286,6 +287,9 @@ export function reportRunFailure(db: Db, run: HeartbeatRun, options: RunFailureR
     isCodexAcpModelCapacityFailure(run, options) ||
     isRestartInterruptedSetup(run)
   )) return Promise.resolve();
+  // A lease-cancelled run delivered its work (CEO decision HIS-3597 q2, HIS-3613).
+  // Counting it in the failure tally would report delivered work as a failure.
+  if (isLeaseCancelledRun(run)) return Promise.resolve();
   const runStatus = run.status;
   const report = captureTerminalRunFailure(db, run, runStatus, options, mode);
   pendingRunFailureReports.add(report);
