@@ -983,6 +983,60 @@ describeEmbeddedPostgres("attention service", () => {
     expect(failures.find((item) => item.subject.id === timedOutId)?.relatedIssue?.id).toBe(taskId);
   });
 
+  it("suppresses failed-run attention from a newer run's issue column without reading its snapshot", async () => {
+    const { companyId, workerId } = await seedCompany("ATC");
+    const issueId = await insertIssue({
+      companyId,
+      identifier: "ATC-1",
+      title: "Recoverable task bound by column",
+      status: "in_progress",
+    });
+    const failedRunId = randomUUID();
+    const failedAt = new Date("2026-07-09T12:00:00.000Z");
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: failedRunId,
+        companyId,
+        agentId: workerId,
+        invocationSource: "automation",
+        status: "failed",
+        error: "adapter failed",
+        contextSnapshot: { issueId },
+        createdAt: failedAt,
+        updatedAt: failedAt,
+        finishedAt: failedAt,
+      },
+      {
+        // The newer run is bound through issue_id; its snapshot carries no issue id.
+        id: randomUUID(),
+        companyId,
+        agentId: workerId,
+        scopeKind: "issue",
+        issueId,
+        invocationSource: "automation",
+        status: "succeeded",
+        contextSnapshot: { wakeReason: "retry" },
+        createdAt: new Date("2026-07-09T12:01:00.000Z"),
+        updatedAt: new Date("2026-07-09T12:01:00.000Z"),
+        finishedAt: new Date("2026-07-09T12:01:00.000Z"),
+      },
+    ]);
+    await db.insert(heartbeatRunEvents).values({
+      companyId,
+      runId: failedRunId,
+      agentId: workerId,
+      seq: 1,
+      eventType: "lifecycle",
+      message: "Bounded retry exhausted after 4 scheduled attempts; no further automatic retry will be queued",
+      createdAt: new Date("2026-07-09T12:00:01.000Z"),
+    });
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+
+    expect(feed.items.filter((item) => item.sourceKind === "failed_run")).toEqual([]);
+  });
+
   it("suppresses failed-run attention after a newer run for the same issue", async () => {
     const { companyId, workerId } = await seedCompany("ATN");
     const issueId = await insertIssue({

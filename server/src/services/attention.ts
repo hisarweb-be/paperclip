@@ -1735,10 +1735,14 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             .select({
               agentId: heartbeatRuns.agentId,
               createdAt: heartbeatRuns.createdAt,
-              // Project just the ids readRunIssueId needs; pulling the whole
-              // context_snapshot detoasts megabytes per feed build.
-              runIssueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
-              runTaskId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'taskId'`,
+              // Project just the ids readRunIssueId needs. Even a single `->>`
+              // detoasts the whole context_snapshot, so prefer the run's issue_id
+              // column and read the snapshot only for rows that lack it (CASE
+              // evaluates the snapshot branch per row, only when needed).
+              runIssueId: sql<string | null>`case when ${heartbeatRuns.issueId} is not null
+                then ${heartbeatRuns.issueId}::text else ${heartbeatRuns.contextSnapshot} ->> 'issueId' end`,
+              runTaskId: sql<string | null>`case when ${heartbeatRuns.issueId} is null
+                then ${heartbeatRuns.contextSnapshot} ->> 'taskId' end`,
             })
             .from(heartbeatRuns)
             .where(and(
