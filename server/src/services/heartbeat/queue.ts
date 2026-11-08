@@ -137,6 +137,7 @@ import {
   ISSUE_REWAKE_RUN_SAMPLE_LIMIT,
   evaluateIssueRewakeThrottle,
   isThrottleCandidateIssueRewake,
+  readOpenBlockerRewakeCooldownMs,
 } from "../issue-rewake-throttle.js";
 import { logActivity } from "../activity-log.js";
 import { ISSUE_BLOCKERS_RESOLVED_WAKE_REASON } from "../issue-dependency-wakeups.js";
@@ -3927,6 +3928,14 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           // Server-side recovery retries insert runs directly and never reach
           // this gate. A verified durable case receipt carries a new phase;
           // its agent-authored instruction comment is not an event-free wake.
+          // Optional safety net (off unless configured): a blocked issue with an
+          // open blocker cannot move until the blocker resolves, so state wakes
+          // on it are held back for a fixed cooldown after the last run.
+          const openBlockerCooldownMs = readOpenBlockerRewakeCooldownMs();
+          const issueHasOpenBlocker =
+            openBlockerCooldownMs !== null &&
+            issue.status === "blocked" &&
+            (dependencyReadiness?.unresolvedBlockerCount ?? 0) > 0;
           if (
             !caseRequest &&
             isThrottleCandidateIssueRewake({
@@ -3936,6 +3945,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               forceFreshSession:
                 enrichedContextSnapshot.forceFreshSession === true,
               hasExplicitResume: Boolean(explicitResumeSession),
+              issueHasOpenBlocker,
             })
           ) {
             const throttleNow = new Date();
@@ -4018,6 +4028,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 // Presentation/author metadata therefore cannot smuggle human
                 // wake privilege, nor can it mask an actual human response.
                 hasNewIssueInputSinceLastRun: newInputRows.length > 0,
+                openBlockerCooldownMs: issueHasOpenBlocker
+                  ? openBlockerCooldownMs
+                  : null,
               });
 
               if (throttleDecision.blocked) {
