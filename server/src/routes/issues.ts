@@ -273,7 +273,7 @@ import {
 } from "../attachment-types.js";
 import { retainBacklogHumanAssignment } from "../services/human-directed-work.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
-import { shouldWakeAssigneeForIssueComment } from "../services/issue-comment-wakeup.js";
+import { loadIssueWakeParking, shouldWakeAssigneeForIssueComment } from "../services/issue-comment-wakeup.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
 import { notifySecretProposalResolution } from "../services/secret-proposal-notifications.js";
 import {
@@ -15647,6 +15647,10 @@ export function issueRoutes(
               issueAtCommentStart: existing,
               reopened,
               currentStatus: issue.status,
+              commentFromAgent: actorIsAgent,
+              issueParking: actorIsAgent
+                ? await loadIssueWakeParking(svc, issue)
+                : undefined,
             });
 
           if (
@@ -19107,6 +19111,10 @@ export function issueRoutes(
           issueAtCommentStart: issue,
           reopened,
           currentStatus: wakeIssueSnapshot.status,
+          commentFromAgent: actorIsAgent,
+          issueParking: actorIsAgent
+            ? await loadIssueWakeParking(svc, wakeIssueSnapshot)
+            : undefined,
         });
         if (assigneeId && !goalCommentSteered && shouldWakeAssigneeForComment) {
           if (reopened) {
