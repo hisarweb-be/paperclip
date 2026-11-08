@@ -12499,6 +12499,22 @@ export function issueService(db: Db) {
       );
     },
 
+    /**
+     * Replace the body of a comment that is not deleted. Returns null when the
+     * comment does not exist or was deleted concurrently.
+     */
+    updateComment: async (commentId: string, body: string) => {
+      const { censorUsernameInLogs } = await instanceSettings.getGeneral();
+      const [comment] = await db
+        .update(issueComments)
+        .set({ body, updatedAt: new Date() })
+        .where(
+          and(eq(issueComments.id, commentId), isNull(issueComments.deletedAt)),
+        )
+        .returning();
+      return comment ? redactIssueComment(comment, censorUsernameInLogs) : null;
+    },
+
     removeComment: async (commentId: string) => {
       const currentUserRedactionOptions = {
         enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,

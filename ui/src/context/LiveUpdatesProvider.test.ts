@@ -905,6 +905,34 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     });
   });
 
+  it("refreshes the comment thread when another user edits a comment", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: () => undefined,
+    };
+
+    __liveUpdatesTestUtils.invalidateActivityQueries(
+      queryClient as never,
+      "company-1",
+      {
+        entityType: "issue",
+        entityId: "issue-1",
+        action: "issue.comment_edited",
+        actorType: "user",
+        actorId: "user-2",
+        details: { commentId: "comment-1" },
+      },
+      { userId: "user-1", agentId: null },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.comments("issue-1"),
+    });
+  });
+
   it("treats self-authored comment-driven issue updates as inactive-only refreshes", () => {
     const invalidations: unknown[] = [];
     const queryClient = {

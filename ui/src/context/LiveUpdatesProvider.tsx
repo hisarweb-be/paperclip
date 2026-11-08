@@ -1347,6 +1347,7 @@ function invalidateActivityQueries(
     if (entityId) {
       const selfCommentActivity =
         (action === "issue.comment_added" ||
+          action === "issue.comment_edited" ||
           (action === "issue.updated" &&
             readString(details?.source) === "comment")) &&
         ((actorType === "user" &&
@@ -1422,7 +1423,11 @@ function invalidateActivityQueries(
             : undefined;
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(ref), ...invalidationOptions });
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(ref), ...invalidationOptions });
-        if (action === "issue.comment_added" || action === "issue.conversation_session_started") {
+        if (
+          action === "issue.comment_added" ||
+          action === "issue.comment_edited" ||
+          action === "issue.conversation_session_started"
+        ) {
           queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(ref), ...invalidationOptions });
         }
         if (action?.startsWith("issue.attachment_") || action?.startsWith("issue.work_product_")) {
