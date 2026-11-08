@@ -8296,6 +8296,55 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(takeoverWakes).toHaveLength(0);
   });
 
+  it("leaves a recovery action open instead of failing the pass when blocking the source on its children forms a cycle", async () => {
+    const companyId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await seedRecoveryCompany(companyId, issuePrefix);
+    const cycleParentId = randomUUID();
+    const cycleChildId = randomUUID();
+    const healthyParentId = randomUUID();
+    const healthyChildId = randomUUID();
+    await db.insert(issues).values([
+      { id: cycleParentId, companyId, title: "Parent with an inverted blocker edge", status: "todo", priority: "medium", issueNumber: 1, identifier: `${issuePrefix}-1` },
+      { id: cycleChildId, companyId, parentId: cycleParentId, title: "Child blocked by its parent", status: "todo", priority: "medium", issueNumber: 2, identifier: `${issuePrefix}-2` },
+      { id: healthyParentId, companyId, title: "Parent waiting on a healthy child", status: "todo", priority: "medium", issueNumber: 3, identifier: `${issuePrefix}-3` },
+      { id: healthyChildId, companyId, parentId: healthyParentId, title: "Child owned by a user", status: "todo", priority: "medium", assigneeUserId: "responsible-user", issueNumber: 4, identifier: `${issuePrefix}-4` },
+    ]);
+    // The parent already blocks its own child, so blocking the parent on that
+    // child is rejected as a blocking cycle.
+    await db.insert(issueRelations).values({ companyId, issueId: cycleParentId, relatedIssueId: cycleChildId, type: "blocks" });
+    const actionRow = (sourceIssueId: string) => ({
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      status: "active",
+      ownerType: "board",
+      ownerAgentId: null,
+      cause: "process_lost",
+      fingerprint: `cycle-test:${sourceIssueId}`,
+      evidence: {},
+      nextAction: "Board review",
+      wakePolicy: null,
+    });
+    const [cycleAction, healthyAction] = await db
+      .insert(issueRecoveryActions)
+      .values([actionRow(cycleParentId), actionRow(healthyParentId)])
+      .returning();
+
+    await expect(heartbeatService(db).reconcileStrandedAssignedIssues()).resolves.toBeDefined();
+
+    const [cycleActionAfter, healthyActionAfter, cycleParent, healthyParent] = await Promise.all([
+      db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, cycleAction!.id)).then((rows) => rows[0]),
+      db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, healthyAction!.id)).then((rows) => rows[0]),
+      selectRecoveryIssueById(cycleParentId),
+      selectRecoveryIssueById(healthyParentId),
+    ]);
+    expect(cycleActionAfter).toMatchObject({ status: "active" });
+    expect(cycleParent).toMatchObject({ status: "todo" });
+    expect(healthyActionAfter).toMatchObject({ status: "resolved" });
+    expect(healthyParent).toMatchObject({ status: "blocked" });
+  });
+
   it("does not consume a disposition-repair attempt when on-demand wakes are disabled", async () => {
     const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",

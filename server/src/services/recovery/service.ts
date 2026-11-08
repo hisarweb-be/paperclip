@@ -89,7 +89,7 @@ import {
   nativeRunnerOwnershipNotHeldCondition,
 } from "../native-runtime/native-runner-ownership.js";
 import { visibleIssueCondition } from "../issue-visibility.js";
-import { forbidden, notFound } from "../../errors.js";
+import { forbidden, HttpError, notFound } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import {
   isPidAlive,
@@ -3612,15 +3612,35 @@ export function recoveryService(
             issue.companyId,
             issue.id,
           );
-          await issuesSvc.update(issue.id, {
-            status: "blocked",
-            blockedByIssueIds: [
-              ...new Set([
-                ...blockerIds,
-                ...healthyChildren.map((child) => child.id),
-              ]),
-            ],
-          });
+          try {
+            await issuesSvc.update(issue.id, {
+              status: "blocked",
+              blockedByIssueIds: [
+                ...new Set([
+                  ...blockerIds,
+                  ...healthyChildren.map((child) => child.id),
+                ]),
+              ],
+            });
+          } catch (err) {
+            // Startup recovery runs this reconciler and rethrows, so one invalid
+            // relation (for example a parent that already blocks one of these
+            // children, which makes this update a blocking cycle) would keep the
+            // whole server from starting. Leave this action open and move on;
+            // the next pass retries it once the relation is fixed.
+            if (!(err instanceof HttpError) || err.status !== 422) throw err;
+            logger.warn(
+              {
+                err,
+                recoveryActionId: action.id,
+                issueId: issue.id,
+                healthyChildIssueIds: healthyChildren.map((child) => child.id),
+              },
+              "recovery could not block source issue on its healthy children; leaving recovery action open",
+            );
+            result.skipped += 1;
+            continue;
+          }
         }
         const resolved = await recoveryActionsSvc.resolveActiveForIssue({
           companyId: action.companyId,
