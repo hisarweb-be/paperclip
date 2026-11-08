@@ -28,6 +28,7 @@ import {
   selectBundledDependencyPatches,
   stageBundledEsbuildOptionalDependencies,
   stageBundledProviderOptionalDependencies,
+  workspaceVersionResolver,
 } from "./prepare-bundled-package.mjs";
 
 const rootPackage = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
@@ -764,4 +765,32 @@ test("installed ACPX runtime persists and restores optional goal capabilities", 
   assert.deepEqual(JSON.parse(JSON.stringify(helpers.restoredGoalCapability(saved))), goal);
   assert.equal(helpers.persistedGoalCapability({ ...goal, version: 2 }), undefined);
   assert.equal(helpers.persistedGoalCapability({ ...goal, actions: ["set"] }), undefined);
+});
+
+test("workspace dependencies resolve to the dependency version, not the consumer version", () => {
+  const sourceDir = mkdtempSync(join(tmpdir(), "workspace-version-"));
+  try {
+    mkdirSync(join(sourceDir, "node_modules/@paperclipai/plugin-sdk"), { recursive: true });
+    writeFileSync(
+      join(sourceDir, "node_modules/@paperclipai/plugin-sdk/package.json"),
+      JSON.stringify({ name: "@paperclipai/plugin-sdk", version: "1.0.0" }),
+    );
+    const published = materializePublishManifest(
+      {
+        name: "paperclipai",
+        version: "0.3.1",
+        dependencies: {
+          "@paperclipai/plugin-sdk": "workspace:*",
+          "@paperclipai/caret": "workspace:^",
+          "@paperclipai/missing": "workspace:*",
+        },
+      },
+      { resolveWorkspaceVersion: workspaceVersionResolver(sourceDir) },
+    );
+    assert.equal(published.dependencies["@paperclipai/plugin-sdk"], "1.0.0");
+    // Not installed in sourceDir: falls back to the consumer version (previous behaviour).
+    assert.equal(published.dependencies["@paperclipai/missing"], "0.3.1");
+  } finally {
+    rmSync(sourceDir, { recursive: true, force: true });
+  }
 });

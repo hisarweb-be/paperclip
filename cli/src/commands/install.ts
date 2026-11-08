@@ -282,6 +282,22 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
     await runCommand("corepack", ["pnpm", "-r", "--filter", "@paperclipai/server...", "--if-present", "run", "build"], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
     const metadata = JSON.parse(fs.readFileSync(path.join(checkoutPath, "cli", "package.json"), "utf8")) as { version: string };
     const workspacePackages = resolveGitInstallWorkspacePackages(checkoutPath);
+    if (workspacePackages.some(({ name }) => name === "@paperclipai/server")) {
+      await runCommand("bash", ["scripts/prepare-server-ui-dist.sh"], {
+        cwd: checkoutPath,
+        env: buildEnv(),
+        maxBuffer: 32 * 1024 * 1024,
+      });
+    }
+    const repositorySkills = path.join(checkoutPath, "skills");
+    for (const workspacePackage of workspacePackages) {
+      const packageDir = path.join(checkoutPath, workspacePackage.dir);
+      const packageJson = JSON.parse(fs.readFileSync(path.join(packageDir, "package.json"), "utf8")) as { files?: string[] };
+      const packageSkills = path.join(packageDir, "skills");
+      if (packageJson.files?.includes("skills") && !fs.existsSync(packageSkills)) {
+        fs.cpSync(repositorySkills, packageSkills, { recursive: true });
+      }
+    }
     for (const [index, workspacePackage] of workspacePackages.entries()) {
       const packageDir = path.join(checkoutPath, workspacePackage.dir);
       const packageJson = JSON.parse(fs.readFileSync(path.join(packageDir, "package.json"), "utf8")) as { bundleDependencies?: string[]; bundledDependencies?: string[] };
@@ -289,7 +305,7 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
       if (bundledDependencies.length > 0) {
         const stagedPackage = path.join(stagingRoot, `workspace-package-${index}`);
         await runCommand(process.execPath, [path.join(checkoutPath, "scripts", "prepare-bundled-package.mjs"), packageDir, stagedPackage], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
-        await runCommand("npm", ["pack", stagedPackage, "--pack-destination", stagingRoot], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 16 * 1024 * 1024 });
+        await runCommand("npm", ["pack", stagedPackage, "--pack-destination", stagingRoot, "--ignore-scripts"], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 16 * 1024 * 1024 });
       } else {
         await runCommand("corepack", ["pnpm", "--dir", workspacePackage.dir, "pack", "--pack-destination", stagingRoot], { cwd: checkoutPath, env: buildEnv({ PAPERCLIP_RELEASE_REUSE_UI_DIST: "1" }), maxBuffer: 32 * 1024 * 1024 });
       }
