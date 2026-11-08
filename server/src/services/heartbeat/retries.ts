@@ -20,6 +20,12 @@ import { WORKSPACE_GIT_SCAN_ERROR_CODES } from "../workspace-git-operation-sched
 import { CONTROLLER_LEASE_LOST_FAILURE_CODE } from "../legacy-controller-lease.js";
 import { randomUUID } from "node:crypto";
 import {
+  ISSUE_RETRY_HOURLY_BUDGET_MAX_CHAINS,
+  ISSUE_RETRY_HOURLY_BUDGET_REASON,
+  ISSUE_RETRY_HOURLY_BUDGET_WINDOW_MS,
+  countIssueRetryChainsSince,
+} from "../issue-retry-budget.js";
+import {
   and,
   asc,
   desc,
@@ -703,6 +709,13 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
             | "issue_execution_lock_changed";
           issueId: string | null;
           details: Record<string, unknown>;
+        }
+      | {
+          outcome: "retry_exhausted";
+          reason: string;
+          errorCode: "issue_retry_hourly_budget";
+          issueId: string;
+          details: Record<string, unknown>;
         };
 
     const scheduleResult = await db.transaction(
@@ -993,6 +1006,33 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           retryContextSnapshot.previousRunId = continuation.previousRunId;
         }
 
+        // HIS-4580: at most three automatic retries per (agent, task) per hour,
+        // counted across fresh chains, so a task cannot loop on retries.
+        if (issueId) {
+          const chainsThisHour = await countIssueRetryChainsSince(tx, {
+            companyId: run.companyId,
+            agentId: run.agentId,
+            issueId,
+            since: new Date(now.getTime() - ISSUE_RETRY_HOURLY_BUDGET_WINDOW_MS),
+          });
+          if (chainsThisHour >= ISSUE_RETRY_HOURLY_BUDGET_MAX_CHAINS) {
+            return {
+              outcome: "retry_exhausted",
+              reason: `Hourly retry budget for this task is spent (${chainsThisHour}/${ISSUE_RETRY_HOURLY_BUDGET_MAX_CHAINS} retries in the last hour); no further automatic retry will be queued`,
+              errorCode: "issue_retry_hourly_budget",
+              issueId,
+              details: {
+                issueId,
+                agentId: run.agentId,
+                retryReason,
+                chainsThisHour,
+                maxChains: ISSUE_RETRY_HOURLY_BUDGET_MAX_CHAINS,
+                budgetReason: ISSUE_RETRY_HOURLY_BUDGET_REASON,
+              },
+            };
+          }
+        }
+
         const wakeupRequest = await tx
           .insert(agentWakeupRequests)
           .values({
@@ -1205,6 +1245,29 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         };
       },
     );
+
+    if (scheduleResult.outcome === "retry_exhausted") {
+      const hourlyExhaustion = {
+        retryReason,
+        scheduledRetryAttempt: consumedAttempts,
+        maxAttempts,
+        ...scheduleResult.details,
+      };
+      await appendRunEvent(run, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: scheduleResult.reason,
+        payload: hourlyExhaustion,
+        retryExhaustion: hourlyExhaustion,
+      });
+      return {
+        outcome: "retry_exhausted" as const,
+        reason: scheduleResult.reason,
+        errorCode: "issue_retry_hourly_budget" as const,
+        issueId: scheduleResult.issueId,
+      };
+    }
 
     if (scheduleResult.outcome === "not_scheduled") {
       await appendRunEvent(run, {

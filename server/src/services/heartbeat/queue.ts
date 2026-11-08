@@ -1,4 +1,10 @@
 import { authorizationService } from "../authorization.js";
+import {
+  ISSUE_RETRY_HOURLY_BUDGET_MAX_CHAINS,
+  ISSUE_RETRY_HOURLY_BUDGET_REASON,
+  ISSUE_RETRY_HOURLY_BUDGET_WINDOW_MS,
+  countIssueRetryChainsSince,
+} from "../issue-retry-budget.js";
 import { assertTaskRetryConversationAllowed, readTaskRetryIntent, retireSupersededTaskRetry } from "../task-retry.js";
 import { insertIssueComment } from "../issue-comment-writes.js";
 import { withExternalAdmissionGuard, assertNoExternalOverlap } from "../../modules/external-agents/index.js";
@@ -2934,6 +2940,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             }
           }
           let automaticParentRunId: string | null = null;
+          let continuationRetryParentRunId: string | null = null;
           if (
             source === "automation" &&
             opts.requestedByActorType === "system"
@@ -2951,11 +2958,13 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               nativeParent.kind === "parent"
                 ? nativeParent.runId
                 : genericParent;
+            continuationRetryParentRunId = genericParent;
             if (automaticParentRunId) {
               const [parent] = await tx
                 .select({
                   agentId: heartbeatRuns.agentId,
                   context: heartbeatRuns.contextSnapshot,
+                  status: heartbeatRuns.status,
                 })
                 .from(heartbeatRuns)
                 .where(
@@ -2972,6 +2981,48 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 parent.agentId !== agentId
               )
                 automaticParentRunId = null;
+              // HIS-4580: the continuation wake is the second retry route; it
+              // spends the same hourly budget per (agent, task) as the bounded
+              // retry, but only when its predecessor is stranded.
+              if (
+                issueId &&
+                automaticParentRunId &&
+                continuationRetryParentRunId &&
+                parent &&
+                (parent.status === "failed" ||
+                  parent.status === "cancelled" ||
+                  parent.status === "timed_out")
+              ) {
+                const chainsThisHour = await countIssueRetryChainsSince(tx, {
+                  companyId: agent.companyId,
+                  agentId,
+                  issueId,
+                  since: new Date(Date.now() - ISSUE_RETRY_HOURLY_BUDGET_WINDOW_MS),
+                });
+                if (chainsThisHour >= ISSUE_RETRY_HOURLY_BUDGET_MAX_CHAINS) {
+                  await tx
+                    .insert(agentWakeupRequests)
+                    .values({
+                      companyId: agent.companyId,
+                      agentId,
+                      source,
+                      triggerDetail,
+                      reason: ISSUE_RETRY_HOURLY_BUDGET_REASON,
+                      payload: {
+                        issueId,
+                        retryOfRunId: continuationRetryParentRunId,
+                        chainsThisHour,
+                        maxChains: ISSUE_RETRY_HOURLY_BUDGET_MAX_CHAINS,
+                      },
+                      status: "skipped",
+                      requestedByActorType: "system",
+                      requestedByActorId: opts.requestedByActorId ?? null,
+                      idempotencyKey: opts.idempotencyKey ?? null,
+                      finishedAt: new Date(),
+                    });
+                  return { kind: "skipped" as const };
+                }
+              }
             }
             const proof =
               nativeParent.kind === "unresolved"
