@@ -3,9 +3,11 @@ import {
   ISSUE_REWAKE_BASE_COOLDOWN_MS,
   ISSUE_REWAKE_MAX_COOLDOWN_MS,
   ISSUE_REWAKE_NO_PROGRESS_THRESHOLD,
+  ISSUE_REWAKE_OPEN_BLOCKER_COOLDOWN_ENV,
   computeIssueRewakeCooldownMs,
   evaluateIssueRewakeThrottle,
   isThrottleCandidateIssueRewake,
+  readOpenBlockerRewakeCooldownMs,
 } from "../services/issue-rewake-throttle.ts";
 
 const NOW = new Date("2026-07-12T18:14:00.000Z");
@@ -205,5 +207,93 @@ describe("evaluateIssueRewakeThrottle", () => {
       hasNewIssueInputSinceLastRun: true,
     });
     expect(decision).toEqual({ blocked: false, noProgressStreak: 0 });
+  });
+});
+
+describe("open-blocker rewake cooldown", () => {
+  const SIX_HOURS_MS = 6 * 60 * 60_000;
+  const candidateBase = {
+    reason: "issue_assigned",
+    wakeCommentId: null,
+    requestedByActorType: "system" as const,
+    forceFreshSession: false,
+    hasExplicitResume: false,
+  };
+
+  it("is off unless the setting holds a positive whole number of minutes", () => {
+    expect(readOpenBlockerRewakeCooldownMs({})).toBeNull();
+    for (const value of ["", "0", "-1", "6h", "1.5", "abc"]) {
+      expect(readOpenBlockerRewakeCooldownMs({ [ISSUE_REWAKE_OPEN_BLOCKER_COOLDOWN_ENV]: value })).toBeNull();
+    }
+    expect(readOpenBlockerRewakeCooldownMs({ [ISSUE_REWAKE_OPEN_BLOCKER_COOLDOWN_ENV]: "360" })).toBe(SIX_HOURS_MS);
+  });
+
+  it("makes timer and other state wakes on a blocked issue throttle candidates", () => {
+    for (const reason of ["heartbeat_timer", "issue_monitor_due", "run_liveness_continuation"]) {
+      expect(isThrottleCandidateIssueRewake({ ...candidateBase, reason })).toBe(false);
+      expect(isThrottleCandidateIssueRewake({ ...candidateBase, reason, issueHasOpenBlocker: true })).toBe(true);
+    }
+  });
+
+  it("still lets human comments and explicit escalations through", () => {
+    expect(isThrottleCandidateIssueRewake({
+      ...candidateBase,
+      reason: "issue_commented",
+      wakeCommentId: "comment-1",
+      requestedByActorType: "user",
+      issueHasOpenBlocker: true,
+    })).toBe(false);
+    expect(isThrottleCandidateIssueRewake({ ...candidateBase, forceFreshSession: true, issueHasOpenBlocker: true })).toBe(false);
+    expect(isThrottleCandidateIssueRewake({ ...candidateBase, hasExplicitResume: true, issueHasOpenBlocker: true })).toBe(false);
+  });
+
+  it("blocks after a single run that made progress while inside the cooldown", () => {
+    const input = {
+      now: NOW,
+      recentTerminalRuns: [runSample({ id: "r1", finishedSecondsAgo: 3600 })],
+      runIdsWithIssueProgress: new Set(["r1"]),
+      hasNewIssueInputSinceLastRun: false,
+    };
+    // Upstream: one run with progress never throttles.
+    expect(evaluateIssueRewakeThrottle(input)).toEqual({ blocked: false, noProgressStreak: 0 });
+    const decision = evaluateIssueRewakeThrottle({ ...input, openBlockerCooldownMs: SIX_HOURS_MS });
+    expect(decision).toEqual({
+      blocked: true,
+      noProgressStreak: 0,
+      cooldownMs: SIX_HOURS_MS,
+      lastRunFinishedAt: new Date(NOW.getTime() - 3600_000),
+      nextAllowedAt: new Date(NOW.getTime() - 3600_000 + SIX_HOURS_MS),
+    });
+  });
+
+  it("allows once the cooldown elapsed or new input arrived", () => {
+    const base = {
+      now: NOW,
+      recentTerminalRuns: [runSample({ id: "r1", finishedSecondsAgo: SIX_HOURS_MS / 1000 + 1 })],
+      runIdsWithIssueProgress: new Set(["r1"]),
+      hasNewIssueInputSinceLastRun: false,
+      openBlockerCooldownMs: SIX_HOURS_MS,
+    };
+    expect(evaluateIssueRewakeThrottle(base)).toEqual({ blocked: false, noProgressStreak: 0 });
+    expect(evaluateIssueRewakeThrottle({
+      ...base,
+      recentTerminalRuns: [runSample({ id: "r1", finishedSecondsAgo: 60 })],
+      hasNewIssueInputSinceLastRun: true,
+    })).toEqual({ blocked: false, noProgressStreak: 0 });
+  });
+
+  it("never weakens the regular streak throttle once its own window passed", () => {
+    const decision = evaluateIssueRewakeThrottle({
+      now: NOW,
+      recentTerminalRuns: [
+        runSample({ id: "r2", finishedSecondsAgo: 10 }),
+        runSample({ id: "r1", finishedSecondsAgo: 40 }),
+      ],
+      runIdsWithIssueProgress: new Set(),
+      hasNewIssueInputSinceLastRun: false,
+      openBlockerCooldownMs: 1,
+    });
+    expect(decision.blocked).toBe(true);
+    if (decision.blocked) expect(decision.cooldownMs).toBe(ISSUE_REWAKE_BASE_COOLDOWN_MS);
   });
 });

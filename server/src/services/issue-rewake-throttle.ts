@@ -40,6 +40,43 @@ export const ISSUE_REWAKE_LOOKBACK_MS = 6 * 60 * 60_000;
 export const ISSUE_REWAKE_RUN_SAMPLE_LIMIT = 8;
 
 /**
+ * Optional safety-net cooldown, in minutes, for an issue whose status is
+ * `blocked` while it still has at least one unresolved blocker. Unset (the
+ * default) keeps the upstream behaviour. When set, timer, assignment and
+ * agent-comment wakes on such an issue are held back until this long after
+ * the agent's last run on it, unless new issue input arrived since. A blocked
+ * issue cannot move until its blocker resolves (which wakes it through the
+ * event-shaped `issue_blockers_resolved` reason), so each extra wake only
+ * re-reads the same state; the progress streak does not catch this because
+ * every such run leaves a status comment behind. Only runs inside
+ * ISSUE_REWAKE_LOOKBACK_MS are sampled, so values above that window act as
+ * the window itself.
+ */
+export const ISSUE_REWAKE_OPEN_BLOCKER_COOLDOWN_ENV =
+  "PAPERCLIP_ISSUE_REWAKE_OPEN_BLOCKER_COOLDOWN_MINUTES";
+
+/**
+ * Reads a cooldown given in whole minutes from the environment and returns it
+ * in milliseconds. Unset, empty, non-integer or non-positive values return
+ * null, which means the cooldown is off.
+ */
+export function readIssueRewakeCooldownMsFromEnv(
+  name: string,
+  env: NodeJS.ProcessEnv = process.env,
+): number | null {
+  const raw = env[name]?.trim();
+  if (!raw || !/^\d+$/.test(raw)) return null;
+  const minutes = Number(raw);
+  return Number.isSafeInteger(minutes) && minutes > 0 ? minutes * 60_000 : null;
+}
+
+export function readOpenBlockerRewakeCooldownMs(
+  env: NodeJS.ProcessEnv = process.env,
+): number | null {
+  return readIssueRewakeCooldownMsFromEnv(ISSUE_REWAKE_OPEN_BLOCKER_COOLDOWN_ENV, env);
+}
+
+/**
  * Wake reasons that assert issue state rather than deliver a new event.
  * These (plus reason-less on-demand invokes) are the only wakes the throttle
  * applies to; every event-shaped reason (comments, mentions, blockers
@@ -103,6 +140,12 @@ export interface IssueRewakeCandidateInput {
   requestedByActorType?: "user" | "agent" | "system" | null;
   forceFreshSession: boolean;
   hasExplicitResume: boolean;
+  /**
+   * The issue is `blocked` with an unresolved blocker and the open-blocker
+   * cooldown is enabled. Makes state-shaped wakes of any reason candidates;
+   * human comments and explicit escalations still pass.
+   */
+  issueHasOpenBlocker?: boolean;
 }
 
 /**
@@ -115,6 +158,7 @@ export function isThrottleCandidateIssueRewake(input: IssueRewakeCandidateInput)
   // Agent-authored resume comments remain subject to the normal rewake throttle.
   if (input.hasExplicitResume && input.requestedByActorType !== "agent") return false;
   if (input.wakeCommentId) return input.requestedByActorType === "agent";
+  if (input.issueHasOpenBlocker === true) return true;
   if (input.reason === null) return true;
   return THROTTLED_ISSUE_REWAKE_REASONS.has(input.reason);
 }
@@ -133,6 +177,11 @@ export interface IssueRewakeThrottleInput {
   runIdsWithIssueProgress: ReadonlySet<string>;
   /** New issue input landed after the newest run finished. */
   hasNewIssueInputSinceLastRun: boolean;
+  /**
+   * Fixed cooldown for an issue that is blocked by an open blocker; null or
+   * absent when the issue has none or the setting is off.
+   */
+  openBlockerCooldownMs?: number | null;
 }
 
 export type IssueRewakeThrottleDecision =
@@ -152,10 +201,31 @@ export function computeIssueRewakeCooldownMs(noProgressStreak: number): number {
   return Math.min(ISSUE_REWAKE_BASE_COOLDOWN_MS * factor, ISSUE_REWAKE_MAX_COOLDOWN_MS);
 }
 
+/**
+ * Blocks while `now` is inside `cooldownMs` after the newest run finished;
+ * returns null otherwise so the regular streak logic still applies.
+ */
+function evaluateFixedIssueRewakeCooldown(
+  runs: RecentIssueRunSample[],
+  now: Date,
+  cooldownMs: number,
+): IssueRewakeThrottleDecision | null {
+  const lastRunFinishedAt = runs[0]?.finishedAt;
+  if (!lastRunFinishedAt) return null;
+  const nextAllowedAt = new Date(lastRunFinishedAt.getTime() + cooldownMs);
+  if (now.getTime() >= nextAllowedAt.getTime()) return null;
+  return { blocked: true, noProgressStreak: 0, cooldownMs, lastRunFinishedAt, nextAllowedAt };
+}
+
 export function evaluateIssueRewakeThrottle(input: IssueRewakeThrottleInput): IssueRewakeThrottleDecision {
   const runs = input.recentTerminalRuns;
   if (runs.length === 0) return { blocked: false, noProgressStreak: 0 };
   if (input.hasNewIssueInputSinceLastRun) return { blocked: false, noProgressStreak: 0 };
+
+  if (input.openBlockerCooldownMs != null) {
+    const decision = evaluateFixedIssueRewakeCooldown(runs, input.now, input.openBlockerCooldownMs);
+    if (decision) return decision;
+  }
 
   let noProgressStreak = 0;
   for (const run of runs) {
