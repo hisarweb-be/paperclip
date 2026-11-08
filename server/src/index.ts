@@ -157,6 +157,7 @@ import {
 import { initializeCloudRuntimeIdentity } from "./services/cloud-runtime-identity.js";
 import { systemdNotify } from "./services/systemd-notify.js";
 import { flushInFlightRunLogMirrors } from "./services/run-log-store.js";
+import { createSingleFlightJob } from "./lib/single-flight-job.js";
 import {
   createEmbeddedPostgresSupervisor,
   type EmbeddedPostgresSupervisor,
@@ -1772,6 +1773,10 @@ async function startServerWithDatabaseTeardown(
       await step("retention_sweep", runRetentionSweep);
     };
 
+    // The periodic recovery chain can take longer than one scheduler interval on large
+    // instances. Overlapping chains multiply database load and make every following chain
+    // slower, so a tick skips the chain while the previous one is still running.
+    const periodicHeartbeatRecovery = createSingleFlightJob();
     const createHeartbeatSchedulerTick = (scheduled: ReturnType<typeof registerScheduledWork>) => () => {
       // Track the outer async callback as well as the work it starts. Shutdown
       // can then wait through an already-running suppression check before it
@@ -1874,8 +1879,9 @@ async function startServerWithDatabaseTeardown(
         if (isIdleTaskDrainActive() || heartbeatSchedulerStopped) return;
         if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {
           // Periodically reap orphaned runs (5-min staleness threshold) and make sure
-          // persisted queued work is still being driven forward.
-          trackHeartbeatSchedulerWork(heartbeat
+          // persisted queued work is still being driven forward. Single-flight: skipped
+          // while the chain started by an earlier tick has not settled yet.
+          const recovery = periodicHeartbeatRecovery.run(() => heartbeat
             .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
             .then(() => heartbeat.promoteDueScheduledRetries())
             .then(async (promotion) => {
@@ -1923,6 +1929,11 @@ async function startServerWithDatabaseTeardown(
             .catch((err) => {
               logger.error({ err }, "periodic heartbeat recovery failed");
             }));
+          if (recovery) {
+            trackHeartbeatSchedulerWork(recovery);
+          } else {
+            logger.debug("periodic heartbeat recovery skipped: previous chain still running");
+          }
         }
       })().catch((err) => {
         logger.error({ err }, "heartbeat scheduler tick failed");

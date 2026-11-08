@@ -303,6 +303,7 @@ vi.mock("../middleware/logger.js", () => ({
     child: vi.fn(function child() {
       return this;
     }),
+    debug: vi.fn(),
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
@@ -790,7 +791,59 @@ describe("startServer feedback export wiring", () => {
     }
   });
 
+  it("skips the periodic recovery chain while the previous chain is still running", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 30000,
+    }));
+    let intervalCallback: (() => void) | null = null;
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval").mockImplementation(((callback: () => void) => {
+      intervalCallback = callback;
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval);
+    let releaseReap!: () => void;
+    const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
+    try {
+      await startServer();
+      await settleStartupHousekeeping();
+      expect(intervalCallback).not.toBeNull();
+      const reapCallsAfterStartup = heartbeatServiceMock.reapOrphanedRuns.mock.calls.length;
+      const sweepCallsAfterStartup = heartbeatServiceMock.sweepStaleIssueLocks.mock.calls.length;
+      heartbeatServiceMock.reapOrphanedRuns.mockImplementationOnce(
+        () => new Promise((resolve) => {
+          releaseReap = () => resolve({ reaped: 0, runIds: [] });
+        }),
+      );
+
+      intervalCallback?.();
+      await flush();
+      expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenCalledTimes(reapCallsAfterStartup + 1);
+
+      intervalCallback?.();
+      await flush();
+      expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenCalledTimes(reapCallsAfterStartup + 1);
+      expect(vi.mocked(logger.debug)).toHaveBeenCalledWith(
+        "periodic heartbeat recovery skipped: previous chain still running",
+      );
+
+      releaseReap();
+      await vi.waitFor(() => {
+        expect(heartbeatServiceMock.sweepStaleIssueLocks).toHaveBeenCalledTimes(sweepCallsAfterStartup + 1);
+      });
+      await flush();
+
+      intervalCallback?.();
+      await vi.waitFor(() => {
+        expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenCalledTimes(reapCallsAfterStartup + 2);
+      });
+    } finally {
+      releaseReap?.();
+      setIntervalSpy.mockRestore();
+    }
+  });
+
   it("registers native replacement recovery without an execution-control interval", async () => {
+
     loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: true }));
     const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
     try {
