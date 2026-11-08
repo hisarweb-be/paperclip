@@ -1309,7 +1309,11 @@ describe("issue comment reopen routes", () => {
       : await request(app).patch(`/api/issues/${issue.id}`).send({ comment: "Additional context for the active run." });
 
     expect(res.status).toBe(method === "post" ? 201 : 200);
-    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("retry-run-1", undefined, { expectedStatus: "scheduled_retry" });
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(
+      "retry-run-1",
+      "Cancelled because a comment superseded the scheduled retry",
+      expect.objectContaining({ expectedStatus: "scheduled_retry", errorCode: "scheduled_retry_superseded" }),
+    );
     expect(mockIssueService.update).not.toHaveBeenCalledWith(issue.id, expect.objectContaining({ status: "todo" }));
     expect(mockLogActivity).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: "heartbeat.cancelled" }));
     await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
