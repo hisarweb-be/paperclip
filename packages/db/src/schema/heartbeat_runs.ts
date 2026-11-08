@@ -205,5 +205,20 @@ export const heartbeatRuns = pgTable(
         nullif(${table.contextSnapshot}->>'taskKey', '')
       )`)
       .concurrently(),
+    // Recovery and execution-blocker liveness probes look up the open run of
+    // one issue many times a minute; a partial index keeps that a single page.
+    companyOpenIssueIdx: index("heartbeat_runs_open_issue_idx")
+      .on(table.companyId, sql`(${table.contextSnapshot} ->> 'issueId')`)
+      .concurrently()
+      .where(sql`${table.status} in ('queued', 'running', 'scheduled_retry')`),
+    // The recovery sweep finds the run of one recovery action by this key;
+    // without an index every lookup was a full scan of heartbeat_runs.
+    companyRecoveryActionIdx: index("heartbeat_runs_recovery_action_idx")
+      .on(table.companyId, sql`(${table.contextSnapshot} ->> 'recoveryActionId')`)
+      .concurrently(),
+    // Joins a cancelled run to its waiting queued-comment wake request.
+    queuedCommentInterruptIdx: index("heartbeat_runs_queued_comment_interrupt_idx")
+      .on(sql`(${table.resultJson} ->> 'queuedCommentInterruptQueueId')`)
+      .concurrently(),
   }),
 );

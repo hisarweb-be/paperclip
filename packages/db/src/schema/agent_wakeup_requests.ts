@@ -97,5 +97,16 @@ export const agentWakeupRequests = pgTable(
       table.companyId,
       sql`(${table.payload} ->> 'issueId')`,
     ),
+    // Open wake requests per issue are matched on four JSON keys joined by OR;
+    // one index per key lets Postgres use a BitmapOr instead of a full scan.
+    companyPayloadTaskIdx: index("agent_wakeup_requests_company_payload_task_idx")
+      .on(table.companyId, sql`(${table.payload} ->> 'taskId')`)
+      .concurrently(),
+    companyWakeContextIssueIdx: index("agent_wakeup_requests_company_wakectx_issue_idx")
+      .on(table.companyId, sql`((${table.payload} -> '_paperclipWakeContext') ->> 'issueId')`)
+      .concurrently(),
+    companyWakeContextTaskIdx: index("agent_wakeup_requests_company_wakectx_task_idx")
+      .on(table.companyId, sql`((${table.payload} -> '_paperclipWakeContext') ->> 'taskId')`)
+      .concurrently(),
   }),
 );
