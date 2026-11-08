@@ -1570,6 +1570,34 @@ export function heartbeatService(
     return recovery.sweepStaleIssueLocks();
   }
 
+  // Backstop for wakes parked on `deferred_issue_execution` whose owning run
+  // already ended. That queue is normally drained by
+  // `releaseIssueExecutionAndPromote`, which only fires from a run
+  // finalization or an explicit event; when that one drain is missed nothing
+  // re-reads the wake, and `hasActiveExecutionPath()` counts a deferred wake as
+  // a live path, so the issue also drops out of the stranded-recovery lanes.
+  //
+  // The sweep never promotes a wake itself: it selects the issue and replays
+  // the existing `runReleaseDrain` with `suppressImmediateRecovery`, so a card
+  // with nothing to do costs one read and no provider session.
+  async function sweepDeferredIssueExecutionWakes(opts?: {
+    companyId?: string | null;
+    now?: Date;
+  }) {
+    const now = opts?.now ?? new Date();
+    const { result, postCommitEffects } = await wakeQueue.sweepDeferredIssueExecutionWakes({
+      now,
+      ...(opts?.companyId ? { companyId: opts.companyId } : {}),
+    });
+    await applyWakeQueuePostCommitEffects(postCommitEffects);
+    if (result.promoted > 0 || result.cancelled > 0 || result.failed > 0) {
+      logger.info(result, "deferred issue-execution wake sweep resumed parked wakes");
+    } else {
+      logger.debug(result, "deferred issue-execution wake sweep found nothing to resume");
+    }
+    return result;
+  }
+
   function issueIdFromRunContext(contextSnapshot: unknown) {
     const context = parseObject(contextSnapshot);
     return (
@@ -4095,6 +4123,8 @@ export function heartbeatService(
     resumeExecutionWaitComments,
 
     sweepStaleIssueLocks,
+
+    sweepDeferredIssueExecutionWakes,
 
     reconcileResolvedDependencyWakes,
 

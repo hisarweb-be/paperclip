@@ -1712,6 +1712,17 @@ async function startServerWithDatabaseTeardown(
         if (swept.cleared > 0) {
           logger.warn({ ...swept }, "startup stale-lock sweeper cleared issue locks");
         }
+
+        // Runs after the stale-lock sweep above, so a lock left behind by a
+        // dead process is already gone when the backstop reads it. This pass
+        // is the backfill for wakes parked before the backstop existed.
+        const deferredWakesSwept = await heartbeat.sweepDeferredIssueExecutionWakes();
+        if (deferredWakesSwept.promoted > 0 || deferredWakesSwept.cancelled > 0) {
+          logger.warn(
+            { ...deferredWakesSwept },
+            "startup deferred-wake backstop resumed parked issue executions",
+          );
+        }
       })().catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
         throw err;
@@ -1918,6 +1929,15 @@ async function startServerWithDatabaseTeardown(
               const swept = await heartbeat.sweepStaleIssueLocks();
               if (swept.cleared > 0) {
                 logger.warn({ ...swept }, "periodic stale-lock sweeper cleared issue locks");
+              }
+            })
+            .then(async () => {
+              // The deferred-wake queue is otherwise drained only by a run
+              // finalization or an explicit event; without this tick a parked
+              // wake stays parked forever.
+              const swept = await heartbeat.sweepDeferredIssueExecutionWakes();
+              if (swept.promoted > 0 || swept.cancelled > 0) {
+                logger.warn({ ...swept }, "periodic deferred-wake backstop resumed parked issue executions");
               }
             })
             .catch((err) => {

@@ -1,4 +1,5 @@
 import type { ReleaseRecoveryBlockedNoticeKind } from "../domain/policy.js";
+import type { DeferredWakeSweepSkipReason } from "../domain/deferred-wake-sweep.js";
 import type {
   InvokableAgentSnapshot,
   IssueSnapshot,
@@ -241,6 +242,57 @@ export interface IssueLockWriter {
       ports: { host: WakeQueueHost; transaction: WakeQueueTransaction },
     ) => Promise<ReleaseTransactionResult>,
   ): Promise<ReleaseTransactionResult & { run: RunSnapshot }>;
+}
+
+/** One issue the backstop found with wakes parked on `deferred_issue_execution`. */
+export type DeferredWakeSweepIssue = {
+  companyId: string;
+  issueId: string;
+  wakeCount: number;
+  oldestRequestedAt: Date;
+};
+
+/**
+ * What one sweep attempt did with one issue. `drained` carries the release
+ * drain's own result, so the caller applies its post-commit effects through
+ * the same path a run finalization uses.
+ */
+export type DeferredWakeSweepIssueResult =
+  | {
+      action: "drained";
+      outcome: ReleaseOutcome;
+      postCommitEffects: PostCommitEffect[];
+    }
+  | { action: "skipped"; reason: DeferredWakeSweepSkipReason }
+  | { action: "cancelled"; wakeIds: string[]; reason: string }
+  | { action: "missing" };
+
+/**
+ * Periodic backstop for parked `deferred_issue_execution` wakes. The store
+ * only decides *whether* the drain may run for an issue; the drain itself is
+ * `runReleaseDrain`, reached through the callback this port receives, so the
+ * promotion rules keep a single implementation.
+ */
+export interface DeferredWakeSweeper {
+  /** Issues with at least one deferred wake older than `staleAfterMs`, oldest first. */
+  listStaleDeferredWakeIssues(input: {
+    now: Date;
+    staleAfterMs: number;
+    limit: number;
+    companyId?: string | null;
+  }): Promise<DeferredWakeSweepIssue[]>;
+  /**
+   * Opens the issue's lock for the sweep, decides from the locked facts, and
+   * calls `fn` only for a `drain` decision. Cancellations are written inside
+   * the same transaction under the wake-status compare-and-set.
+   */
+  drainIssue(
+    input: { companyId: string; issueId: string; now: Date },
+    fn: (
+      locked: LockedIssueExecution,
+      ports: { host: WakeQueueHost; transaction: WakeQueueTransaction },
+    ) => Promise<ReleaseTransactionResult>,
+  ): Promise<DeferredWakeSweepIssueResult>;
 }
 
 export type StrandedAssignedIssueEscalationInput = {
