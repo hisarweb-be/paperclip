@@ -1,15 +1,44 @@
 import { readProcessStartedAt } from "./hot-restart.js";
 import { runUsedConversationAdapter } from "./conversation-continuation.js";
-import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNotNull, isNull, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { environmentLeases, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { hasNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { isCancelledNativeStartup } from "./cancelled-native-startup.js";
 
+const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out", "interrupted"] as const;
+
+/** Terminal runs older than this carry no live execution: the run clock ends
+ * provider work long before, so their process evidence is not re-read. */
+export const STOPPED_RUN_EVIDENCE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/** Runs of these agents that can still hold execution authority: unfinished,
+ * recently changed, under an unexpired controller lease, or referenced by a
+ * native finalization coordinator that still has an owner. Agents keep their
+ * whole run history, and a pausing agent re-checks stop evidence until it
+ * settles, so reading every historical row (with its large JSON columns) on
+ * each check dominates the server's main thread. */
+export function runsWithPossibleExecutionAuthority(db: Db, agentIds: string[],
+  options: { now?: Date; includeRunIds?: Iterable<string> } = {}): SQL | undefined {
+  const now = options.now ?? new Date();
+  const includeRunIds = [...new Set(options.includeRunIds ?? [])];
+  return and(
+    inArray(heartbeatRuns.agentId, agentIds),
+    or(
+      notInArray(heartbeatRuns.status, [...TERMINAL_RUN_STATUSES]),
+      gt(heartbeatRuns.updatedAt, new Date(now.getTime() - STOPPED_RUN_EVIDENCE_WINDOW_MS)),
+      gt(heartbeatRuns.controllerLeaseExpiresAt, now),
+      inArray(heartbeatRuns.id, db.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
+        .where(isNotNull(nativeRunFinalizations.leaseOwner))),
+      includeRunIds.length ? inArray(heartbeatRuns.id, includeRunIds) : undefined,
+    ),
+  );
+}
+
 /** Cancellation changes admission. Process and lease evidence controls cleanup. */
 export async function agentExecutionsHaveStopped(db: Db, agentIds: string[]) {
   if (!agentIds.length) return true;
-  const runs = await db.select().from(heartbeatRuns).where(inArray(heartbeatRuns.agentId, agentIds));
+  const runs = await db.select().from(heartbeatRuns).where(runsWithPossibleExecutionAuthority(db, agentIds));
   const runIds = db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(inArray(heartbeatRuns.agentId, agentIds));
   const leases = await db.select().from(environmentLeases).where(or(
     inArray(environmentLeases.heartbeatRunId, runIds),
@@ -33,7 +62,7 @@ export async function agentExecutionsHaveStopped(db: Db, agentIds: string[]) {
         new Date(observed).getTime() === coordinator.controllerProcessStartedAt.getTime()) return false;
   }
   for (const run of runs) {
-    if (!["succeeded", "failed", "cancelled", "timed_out", "interrupted"].includes(run.status)) return false;
+    if (!(TERMINAL_RUN_STATUSES as readonly string[]).includes(run.status)) return false;
     if (run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date()) return false;
     const runLeases = leases.filter(lease => lease.heartbeatRunId === run.id);
     if (runLeases.some(lease => lease.provider && lease.provider !== "local")) {
