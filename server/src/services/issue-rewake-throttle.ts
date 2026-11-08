@@ -77,6 +77,27 @@ export function readOpenBlockerRewakeCooldownMs(
 }
 
 /**
+ * Optional cooldown, in minutes, for an issue that has a monitor check
+ * scheduled in the future. Unset (the default) keeps the upstream behaviour.
+ * The scheduled check wakes the agent through the event-shaped
+ * `issue_monitor_due` reason, which is never throttled, so state wakes before
+ * it (assignment, continuation, liveness backstop, agent comments) rarely
+ * bring anything new. The streak throttle does not catch them because
+ * scheduling a monitor counts as issue progress, so a run that only
+ * re-schedules the check resets the streak every time. When set, such wakes
+ * are held back until this long after the agent's last run on the issue,
+ * unless new issue input arrived since.
+ */
+export const ISSUE_REWAKE_FUTURE_MONITOR_COOLDOWN_ENV =
+  "PAPERCLIP_ISSUE_REWAKE_FUTURE_MONITOR_COOLDOWN_MINUTES";
+
+export function readFutureMonitorRewakeCooldownMs(
+  env: NodeJS.ProcessEnv = process.env,
+): number | null {
+  return readIssueRewakeCooldownMsFromEnv(ISSUE_REWAKE_FUTURE_MONITOR_COOLDOWN_ENV, env);
+}
+
+/**
  * Wake reasons that assert issue state rather than deliver a new event.
  * These (plus reason-less on-demand invokes) are the only wakes the throttle
  * applies to; every event-shaped reason (comments, mentions, blockers
@@ -182,6 +203,11 @@ export interface IssueRewakeThrottleInput {
    * absent when the issue has none or the setting is off.
    */
   openBlockerCooldownMs?: number | null;
+  /**
+   * Fixed cooldown for an issue with a monitor check scheduled in the future;
+   * null or absent when there is none or the setting is off.
+   */
+  futureMonitorCooldownMs?: number | null;
 }
 
 export type IssueRewakeThrottleDecision =
@@ -224,6 +250,10 @@ export function evaluateIssueRewakeThrottle(input: IssueRewakeThrottleInput): Is
 
   if (input.openBlockerCooldownMs != null) {
     const decision = evaluateFixedIssueRewakeCooldown(runs, input.now, input.openBlockerCooldownMs);
+    if (decision) return decision;
+  }
+  if (input.futureMonitorCooldownMs != null) {
+    const decision = evaluateFixedIssueRewakeCooldown(runs, input.now, input.futureMonitorCooldownMs);
     if (decision) return decision;
   }
 

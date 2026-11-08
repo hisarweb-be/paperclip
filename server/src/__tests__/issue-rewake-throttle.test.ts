@@ -3,10 +3,12 @@ import {
   ISSUE_REWAKE_BASE_COOLDOWN_MS,
   ISSUE_REWAKE_MAX_COOLDOWN_MS,
   ISSUE_REWAKE_NO_PROGRESS_THRESHOLD,
+  ISSUE_REWAKE_FUTURE_MONITOR_COOLDOWN_ENV,
   ISSUE_REWAKE_OPEN_BLOCKER_COOLDOWN_ENV,
   computeIssueRewakeCooldownMs,
   evaluateIssueRewakeThrottle,
   isThrottleCandidateIssueRewake,
+  readFutureMonitorRewakeCooldownMs,
   readOpenBlockerRewakeCooldownMs,
 } from "../services/issue-rewake-throttle.ts";
 
@@ -295,5 +297,58 @@ describe("open-blocker rewake cooldown", () => {
     });
     expect(decision.blocked).toBe(true);
     if (decision.blocked) expect(decision.cooldownMs).toBe(ISSUE_REWAKE_BASE_COOLDOWN_MS);
+  });
+});
+
+describe("future-monitor rewake cooldown", () => {
+  const SIX_HOURS_MS = 360 * 60_000;
+  // A run that only re-scheduled the monitor counts as issue progress.
+  const monitorOnlyRun = {
+    now: NOW,
+    recentTerminalRuns: [runSample({ id: "r1", finishedSecondsAgo: 1800 })],
+    runIdsWithIssueProgress: new Set(["r1"]),
+    hasNewIssueInputSinceLastRun: false,
+  };
+
+  it("is off unless the setting holds a positive whole number of minutes", () => {
+    expect(readFutureMonitorRewakeCooldownMs({})).toBeNull();
+    for (const value of ["", "0", "-360", "6h", "abc"]) {
+      expect(readFutureMonitorRewakeCooldownMs({ [ISSUE_REWAKE_FUTURE_MONITOR_COOLDOWN_ENV]: value })).toBeNull();
+    }
+    expect(readFutureMonitorRewakeCooldownMs({ [ISSUE_REWAKE_FUTURE_MONITOR_COOLDOWN_ENV]: "360" })).toBe(SIX_HOURS_MS);
+  });
+
+  it("holds back state wakes after a monitor-only run while the cooldown runs", () => {
+    // Upstream: the progress resets the streak, so every wake starts a run.
+    expect(evaluateIssueRewakeThrottle(monitorOnlyRun)).toEqual({ blocked: false, noProgressStreak: 0 });
+    expect(evaluateIssueRewakeThrottle({ ...monitorOnlyRun, futureMonitorCooldownMs: SIX_HOURS_MS })).toEqual({
+      blocked: true,
+      noProgressStreak: 0,
+      cooldownMs: SIX_HOURS_MS,
+      lastRunFinishedAt: new Date(NOW.getTime() - 1800_000),
+      nextAllowedAt: new Date(NOW.getTime() - 1800_000 + SIX_HOURS_MS),
+    });
+  });
+
+  it("allows once the cooldown elapsed or new input arrived", () => {
+    expect(evaluateIssueRewakeThrottle({
+      ...monitorOnlyRun,
+      futureMonitorCooldownMs: 1_000_000,
+    })).toEqual({ blocked: false, noProgressStreak: 0 });
+    expect(evaluateIssueRewakeThrottle({
+      ...monitorOnlyRun,
+      hasNewIssueInputSinceLastRun: true,
+      futureMonitorCooldownMs: SIX_HOURS_MS,
+    })).toEqual({ blocked: false, noProgressStreak: 0 });
+  });
+
+  it("does not change which wakes are throttle candidates", () => {
+    expect(isThrottleCandidateIssueRewake({
+      reason: "issue_monitor_due",
+      wakeCommentId: null,
+      requestedByActorType: "system",
+      forceFreshSession: false,
+      hasExplicitResume: false,
+    })).toBe(false);
   });
 });
