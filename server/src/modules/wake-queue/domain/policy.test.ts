@@ -28,6 +28,7 @@ const basePreDrainFacts: PreDrainFacts = {
   issueStatus: "in_progress",
   hasAssigneeUser: false,
   assigneeAgentMatchesRunAgent: true,
+  cancelledBeforeStart: false,
   legacyExecutionNeedsReconciliation: false,
   executionCancellationAcknowledged: false,
 };
@@ -89,8 +90,30 @@ describe("decidePreDrain", () => {
       expected: { kind: "released" },
     },
     {
+      name: "proceed: a run cancelled before it started drains even when the legacy rule would release",
+      facts: {
+        ...basePreDrainFacts,
+        cancelledBeforeStart: true,
+        // The legacy rule decides on the stored result alone and would return
+        // "released" for a cancelled legacy run; a run that never started has
+        // no provider session to reconcile, so the drain must still run.
+        legacyExecutionNeedsReconciliation: true,
+      },
+      expected: { kind: "proceed" },
+    },
+    {
       name: "released: an acknowledged execution cancellation",
       facts: { ...basePreDrainFacts, executionCancellationAcknowledged: true },
+      expected: { kind: "released" },
+    },
+    {
+      name: "released: an acknowledged cancellation keeps its release even before the run started",
+      facts: {
+        ...basePreDrainFacts,
+        cancelledBeforeStart: true,
+        executionCancellationAcknowledged: true,
+        legacyExecutionNeedsReconciliation: true,
+      },
       expected: { kind: "released" },
     },
     {
