@@ -32,6 +32,10 @@ The upstream review found gaps that the fork commits still have. The
 upstream branches carry the fixes; the fork needs the same change at the
 next rebase.
 
+- Row 2 (55e3455e0): an import that goes over the budget still writes its
+  UI parser to the cache when it finishes later, so it can replace a parser
+  that was reloaded in the meantime. Upstream branch skips that cache write
+  once the load has timed out.
 - Row 10 (da77969e4): a peer write can pass the live-run check and then
   clear a claim taken before its write lands, and a terminal run under a
   native manual hold or a continuation retry claim counts as unlocked.
@@ -42,6 +46,9 @@ next rebase.
   "no stages key" case never triggers, and `monitor: null` still drops the
   stored stages. Upstream branch records `stages` before parsing and compares
   monitors after `scheduledBy` is applied.
+- Row 18 (d1d8d6517): the disposition is also recorded on `cancelled`,
+  which the watchdog round does not count as a reviewed disposition.
+  Upstream branch records it on `done` only.
 
 ## Skipped, with reason
 
