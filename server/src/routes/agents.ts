@@ -120,6 +120,7 @@ import {
   workspaceOperationService,
 } from "../services/index.js";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
+import { loadIssueWakeParking, parkedIssueStateForAgentWake } from "../services/issue-comment-wakeup.js";
 import { ONBOARDING_FIRST_TASK_SKILL_KEY, PAPERCLIP_CORE_SKILL_KEYS } from "../services/company-skills.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { assertAuthenticated, assertBoard, assertCompanyAccess, assertInstanceAdmin, buildActorSecretContext, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
@@ -5948,6 +5949,18 @@ export function agentRoutes(
     source: HeartbeatSource | undefined;
     skippedResponse: (agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>, payload: Record<string, unknown> | null) => unknown | Promise<unknown>;
   };
+  const agentWakeTargetsParkedIssue = async (
+    companyId: string,
+    payload: Record<string, unknown> | null,
+  ): Promise<boolean> => {
+    const issueId = payload?.issueId ?? payload?.taskId;
+    if (typeof issueId !== "string" || issueId.length === 0) return false;
+    const issuesSvc = issueService(db);
+    const issue = await issuesSvc.getById(issueId);
+    if (!issue || issue.companyId !== companyId) return false;
+    const parking = await loadIssueWakeParking(issuesSvc, issue);
+    return parkedIssueStateForAgentWake(parking) !== null;
+  };
   const handleWakeupRoute = async (
     req: Request,
     res: Response,
@@ -6138,6 +6151,16 @@ export function agentRoutes(
             : [],
         ),
       );
+    }
+    if (
+      req.actor.type === "agent" &&
+      (opts.source === "automation" || opts.source === "assignment") &&
+      (await agentWakeTargetsParkedIssue(agent.companyId, wakePayload))
+    ) {
+      // The issue cannot progress until its parking condition changes, so an
+      // agent-initiated automation/assignment wake would only burn a run.
+      res.status(202).json(await opts.skippedResponse(agent, wakePayload));
+      return;
     }
     const run = await heartbeat.wakeup(id, {
       failedRunId: req.body.failedRunId ?? null,
