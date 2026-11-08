@@ -4,6 +4,13 @@ import { insertIssueComment } from "../issue-comment-writes.js";
 import { withExternalAdmissionGuard, assertNoExternalOverlap } from "../../modules/external-agents/index.js";
 import { isAgentAwaitingSetup } from "../../modules/agent-lifecycle/index.js";
 import { normalizeAgentNameKey } from "./retries.js";
+import {
+  compareQueuedRuns,
+  queuedRunClassRank,
+  queuedRunPriorityRank,
+  readQueuedRunAgeUpMinutes,
+  type QueuedRunSortKey,
+} from "./queued-run-ordering.js";
 import { publishActiveDotComment } from "../dot-assignment-follow-up.js";
 import { publishActiveMuseComment } from "../muse-assignment-follow-up.js";
 import {
@@ -640,21 +647,6 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       .then((rows) => rows[0] ?? null);
     if (!claimed) return null;
     return { wasFirstHeartbeat: !agent.lastHeartbeatAt };
-  }
-
-  function issueRunPriorityRank(priority: string | null | undefined) {
-    switch (priority) {
-      case "critical":
-        return 0;
-      case "high":
-        return 1;
-      case "medium":
-        return 2;
-      case "low":
-        return 3;
-      default:
-        return 4;
-    }
   }
 
   async function listQueuedRunDependencyReadiness(
@@ -2014,48 +2006,25 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         );
       const issueById = new Map(issueRows.map((row) => [row.id, row]));
       const companyAgents = await listCompanyAgentOrgRows(agent.companyId);
-      const prioritizedRuns = [...queuedRuns].sort((left, right) => {
-        const leftIssueId = readNonEmptyString(
-          parseObject(left.contextSnapshot).issueId,
-        );
-        const rightIssueId = readNonEmptyString(
-          parseObject(right.contextSnapshot).issueId,
-        );
-        const leftReadiness = leftIssueId
-          ? dependencyReadiness.get(leftIssueId)
-          : null;
-        const rightReadiness = rightIssueId
-          ? dependencyReadiness.get(rightIssueId)
-          : null;
-        const leftReady = leftIssueId
-          ? (leftReadiness?.isDependencyReady ?? true)
-          : true;
-        const rightReady = rightIssueId
-          ? (rightReadiness?.isDependencyReady ?? true)
-          : true;
-        const leftIssue = leftIssueId ? issueById.get(leftIssueId) : null;
-        const rightIssue = rightIssueId ? issueById.get(rightIssueId) : null;
-        const leftRank = leftIssueId
-          ? leftReady
-            ? leftIssue?.status === "in_progress"
-              ? 0
-              : 1
-            : 3
-          : 2;
-        const rightRank = rightIssueId
-          ? rightReady
-            ? rightIssue?.status === "in_progress"
-              ? 0
-              : 1
-            : 3
-          : 2;
-        if (leftRank !== rightRank) return leftRank - rightRank;
-        const leftPriorityRank = issueRunPriorityRank(leftIssue?.priority);
-        const rightPriorityRank = issueRunPriorityRank(rightIssue?.priority);
-        if (leftPriorityRank !== rightPriorityRank)
-          return leftPriorityRank - rightPriorityRank;
-        return left.createdAt.getTime() - right.createdAt.getTime();
-      });
+      const queuedRunSortKey = (run: typeof heartbeatRuns.$inferSelect): QueuedRunSortKey => {
+        const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+        const issue = issueId ? issueById.get(issueId) : null;
+        return {
+          classRank: queuedRunClassRank({
+            hasIssue: Boolean(issueId),
+            dependencyReady: issueId ? (dependencyReadiness.get(issueId)?.isDependencyReady ?? true) : true,
+            issueStatus: issue?.status,
+          }),
+          priorityRank: queuedRunPriorityRank(issue?.priority),
+          createdAtMs: run.createdAt.getTime(),
+        };
+      };
+      const sortKeys = new Map(queuedRuns.map((run) => [run, queuedRunSortKey(run)]));
+      const sortNowMs = Date.now();
+      const ageUpMinutes = readQueuedRunAgeUpMinutes();
+      const prioritizedRuns = [...queuedRuns].sort((left, right) =>
+        compareQueuedRuns(sortKeys.get(left)!, sortKeys.get(right)!, sortNowMs, ageUpMinutes),
+      );
 
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
       for (const queuedRun of prioritizedRuns) {
