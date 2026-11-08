@@ -192,6 +192,7 @@ import type {
 } from "./import-write-types.js";
 import {
   summarizeIssueWatchdog,
+  taskWatchdogService,
   upsertIssueWatchdogForIssue,
 } from "./task-watchdogs.js";
 import {
@@ -11674,6 +11675,41 @@ export function issueService(db: Db) {
       const result = await (dbOrTx === db
         ? db.transaction(runUpdate)
         : runUpdate(dbOrTx));
+      // HIS-5952: a watchdog review card that closes must be recorded as
+      // reviewed on this transition. The round-based path only writes the
+      // lastReviewedFingerprint at the start of a following round, so a card
+      // closed between rounds kept `already_reviewed` damping from applying
+      // and the same stop was re-reviewed on every round. Runs after the
+      // commit on purpose: the recorder re-reads the card from the database
+      // and would still see the previous status inside the transaction. An
+      // external-transaction caller (dbOrTx !== db) has no post-commit point
+      // here; its card is still recorded by the round-based path.
+      if (dbOrTx === db) {
+        const committedStatus = (result as { status?: string } | null | undefined)
+          ?.status;
+        const committed = result as { id?: string; companyId?: string } | null;
+        if (
+          committed?.id &&
+          committed.companyId &&
+          (committedStatus === "done" || committedStatus === "cancelled")
+        ) {
+          try {
+            await taskWatchdogService(db).recordTerminalReviewDisposition(
+              committed.companyId,
+              committed.id,
+              { runId: data.actorRunId ?? null },
+            );
+          } catch (err) {
+            // The issue transition is already committed. A failure here must
+            // not surface as a rolled-back status change; the next round still
+            // records the review through the round-based path.
+            logger.warn(
+              { err, issueId: committed.id, status: committedStatus },
+              "terminal watchdog review disposition deferred to next round",
+            );
+          }
+        }
+      }
       if (dbOrTx === db && !postCommitActivityPublications) {
         for (const publication of ownedActivityPublications)
           publishActivity(publication);
