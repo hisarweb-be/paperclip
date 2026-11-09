@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildIssueBlockersResolvedWakeStateKey,
 } from "../services/issue-dependency-wakeups.ts";
@@ -14,7 +14,14 @@ import {
 // default 5000ms test timeout and produce a flaky "Test timed out in 5000ms"
 // failure. Give the suite generous headroom, far above the observed cold-start
 // yet still below the 30s hook timeout.
-vi.setConfig({ testTimeout: 30000 });
+//
+// On a cold Linux checkout (fresh node_modules, no transform cache, root user,
+// 14 cores, WSL) that cold start measured above 30s for the first two tests,
+// also when this file runs alone, so the first two tests timed out at exactly
+// 30s while the other six took 2-6s each. The cold import is therefore paid once
+// in a warm-up hook with its own long budget, and the per-test budget is raised
+// so a second cold import under load cannot fail a test on timing alone.
+vi.setConfig({ testTimeout: 120000, hookTimeout: 120000 });
 
 const mockWakeup = vi.hoisted(() => vi.fn(async () => undefined));
 const mockFindExistingIssueBlockersResolvedWakeForReadyState = vi.hoisted(() => vi.fn(async () => null));
@@ -161,6 +168,10 @@ async function createApp() {
 }
 
 describe("issue dependency wakeups in issue routes", () => {
+  beforeAll(async () => {
+    await createApp();
+  });
+
   beforeEach(() => {
     vi.resetModules();
     vi.doUnmock("../routes/issues.js");
