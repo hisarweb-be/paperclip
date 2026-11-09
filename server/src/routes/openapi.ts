@@ -74,6 +74,7 @@ import {
   stalledReviewDecisionSchema,
   createIssueLabelSchema,
   addIssueCommentSchema,
+  updateIssueCommentSchema,
   checkoutIssueSchema,
   linkIssueApprovalSchema,
   createIssueWorkProductSchema,
@@ -4609,6 +4610,25 @@ registry.registerPath({
     body: jsonBody(addIssueCommentSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/issues/{id}/comments/{commentId}",
+  tags: ["issues"],
+  summary: "Edit an issue comment you authored",
+  request: {
+    params: z.object({ id: z.string(), commentId: z.string() }),
+    body: jsonBody(updateIssueCommentSchema),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+  },
 });
 
 registry.registerPath({

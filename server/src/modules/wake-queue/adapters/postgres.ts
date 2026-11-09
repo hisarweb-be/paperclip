@@ -22,6 +22,7 @@ import {
 } from "@paperclipai/db";
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../../../services/legacy-execution-recovery.js";
+import { isPreDispatchReviewWait } from "../../../services/pre-dispatch-review-wait.js";
 import {
   authorizeFailedChatRunRetryWake,
   FailedChatRunRetryAuthorizationError,
@@ -1154,6 +1155,10 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           run.runtimeModeResolvedAt === null && run.startedAt === null && run.processStartedAt === null &&
           run.processPid === null && run.processGroupId === null &&
           cancellation?.source === "operator" && cancellation.expected;
+        const legacyExecutionNeedsReconciliation =
+          await legacyExecutionNeedsReconciliationWithEvidence(tx as unknown as Db, run);
+        const unverifiedPreDispatchWait = legacyExecutionNeedsReconciliation &&
+          (isPreDispatchReviewWait(run) || run.errorCode === "execution_reconciliation_required");
         const preDrainFacts: PreDrainFacts = {
           issueRowPresent: issueRow !== null,
           executionRunIdMatchesRun: !issueRow || !issueRow.executionRunId || issueRow.executionRunId === run.id,
@@ -1163,9 +1168,11 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           hasAssigneeUser: Boolean(issueRow?.assigneeUserId),
           assigneeAgentMatchesRunAgent: issueRow?.assigneeAgentId === run.agentId,
           // A queued holder cancelled before dispatch (e.g. the reassignment
-          // lock release) has no provider session to reconcile.
-          cancelledBeforeStart: run.status === "cancelled" && !run.startedAt,
-          legacyExecutionNeedsReconciliation: await legacyExecutionNeedsReconciliationWithEvidence(tx as unknown as Db, run),
+          // lock release) has no provider session to reconcile. A pre-dispatch
+          // wait receipt whose proof failed (launch or cleanup evidence is
+          // retained) is not that case: its hold must stay a release.
+          cancelledBeforeStart: run.status === "cancelled" && !run.startedAt && !unverifiedPreDispatchWait,
+          legacyExecutionNeedsReconciliation,
           // An operator stop never promotes old queued work by itself. The
           // next explicit wake adopts those messages atomically when it
           // queues a run.

@@ -152,6 +152,7 @@ import {
   type IssueWakeDiagnosticWakeRequest,
   type IssueWakeDiagnosticsResponse,
   type IssueRelationIssueSummary,
+  type IssueBlockerAttention,
   type IssueLockedStub,
   type IssueReviewPolicy,
   type IssueThreadInteractionCanonicalResolverPolicy,
@@ -5439,6 +5440,20 @@ export function issueRoutes(
     };
   }
 
+  // The blocker walk names the terminal blocker with its title; a blocker the
+  // actor may not read keeps only the locked stub fields (id, identifier).
+  async function redactBlockerAttention<T extends IssueBlockerAttention | null | undefined>(
+    req: Request,
+    companyId: string,
+    attention: T,
+  ): Promise<T> {
+    const blocker = attention?.terminalBlocker;
+    if (!attention || !blocker) return attention;
+    const readableIds = await readableIssueEdgeIds(req, companyId, [blocker.id]);
+    if (readableIds.has(blocker.id)) return attention;
+    return { ...attention, terminalBlocker: { id: blocker.id, identifier: blocker.identifier, title: "" } };
+  }
+
   async function redactIssueRelationEdgesOnRows<T extends {
     id: string;
     blockedBy?: IssueRelationIssueSummary[];
@@ -9065,6 +9080,7 @@ export function issueRoutes(
       recoveryActionsByRelationIssue,
     );
     const visibleRelations = await redactIssueRelationEdges(req, issue.companyId, relationsWithRecoveryActions);
+    const visibleBlockerAttention = await redactBlockerAttention(req, issue.companyId, blockerAttention);
     const revalidatedActiveRecoveryAction = await revalidateActiveSourceRecoveryForRead({
         issue,
         trigger: "read_projection",
@@ -9130,7 +9146,7 @@ export function issueRoutes(
         description: issue.description,
         status: issue.status,
         workMode: issue.workMode,
-        ...(blockerAttention ? { blockerAttention } : {}),
+        ...(visibleBlockerAttention ? { blockerAttention: visibleBlockerAttention } : {}),
         ...(reviewAttention ? { reviewAttention } : {}),
         ...(executionReview ? { executionReview } : {}),
         scheduledRetry,
@@ -9436,6 +9452,7 @@ export function issueRoutes(
     ]);
     const visibleMentionedProjects = mentionedProjects.filter((_, index) => mentionedProjectVisibility[index]);
     // Recovery revalidation may change the blocker; read it afterwards.
+    const visibleBlockerAttention = await redactBlockerAttention(req, issue.companyId, blockerAttention);
     const executionBlocker = await timing.time("execution_blocker", () => getExecutionBlocker(db, issue.companyId, issue.id));
     res.setHeader("Server-Timing", timing.header());
     res.json({
@@ -9443,7 +9460,7 @@ export function issueRoutes(
       ...inboxArchiveFields,
       goalId: goal?.id ?? issue.goalId,
       ancestors,
-      ...(blockerAttention ? { blockerAttention } : {}),
+      ...(visibleBlockerAttention ? { blockerAttention: visibleBlockerAttention } : {}),
       ...(reviewAttention ? { reviewAttention } : {}),
       successfulRunHandoff: successfulRunHandoffStates.get(issue.id) ?? null,
       executionBlocker,
@@ -16076,7 +16093,8 @@ export function issueRoutes(
       // the flag was cleared.
       const blockerAttention = await svc
         .listBlockerAttention(issueResponse.companyId, [issueResponse])
-        .then((map) => map.get(issueResponse.id) ?? null);
+        .then((map) => map.get(issueResponse.id) ?? null)
+        .then((attention) => redactBlockerAttention(req, issueResponse.companyId, attention));
       const changes = issueResponse.changes ?? {};
       if (prefersMinimalIssueUpdateResponse(req)) {
         res.setHeader("Preference-Applied", "return=minimal");
