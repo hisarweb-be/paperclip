@@ -197,6 +197,17 @@ describe("managed install commands", () => {
     expect(installCall?.[1].filter((arg) => arg.endsWith(".tgz"))).toHaveLength(4);
   });
 
+  it("passes the resolved SHA as PAPERCLIP_BUILD_COMMIT to every checkout build step", async () => {
+    process.env.PAPERCLIP_BUILD_COMMIT = "f".repeat(40);
+    const sha = "e".repeat(40);
+    const runCommand = createGitCheckoutRunCommand(sha);
+    await installGitPayload("paperclipai/paperclip", sha, runCommand, resolveInstallStorePaths());
+    const serverBuild = runCommand.mock.calls.find(([file, args]) => file === "corepack" && args.includes("@paperclipai/server..."));
+    expect(serverBuild?.[2]?.env?.PAPERCLIP_BUILD_COMMIT).toBe(sha);
+    const npmBuild = runCommand.mock.calls.find(([file, args]) => file === "bash" && args[0] === "scripts/build-npm.sh");
+    expect(npmBuild?.[2]?.env?.PAPERCLIP_BUILD_COMMIT).toBe(sha);
+  });
+
   it("builds git checkouts with NODE_ENV cleared so ambient production mode keeps devDependencies", async () => {
     process.env.NODE_ENV = "production";
     const sha = "d".repeat(40);

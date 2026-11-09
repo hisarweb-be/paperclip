@@ -53,6 +53,7 @@ shipped yet; once applied anywhere its file name and content stay fixed.
 | 37 | pauze: limit stop-evidence run reads to runs that can still hold execution authority | Pause polling reads only runs that are live, recent, leased or awaiting release instead of an agent's whole run history. | | `server/src/__tests__/agent-execution-stop-history.test.ts` | already upstream: #20037 |
 | 38 | slotrij: reserveRunBudget reads only the six used run columns under the row lock | The budget reservation keeps its row lock but no longer selects `context_snapshot` and the log columns, which shortens the time the companies row is locked. | | `server/src/__tests__/budget-enforcement-scoping.test.ts` | https://github.com/paperclipai/paperclip/pull/20130 |
 | 39 | attentionruns: read newer-run issue ids from heartbeat_runs.issue_id first | The failed-run attention query reads `issue_id` and only falls back to the context snapshot when it is null, so it no longer detoasts every snapshot. | HIS-5846 | `server/src/__tests__/attention-service.test.ts` | not offered: rewritten upstream |
+| 40 | install: stamp the resolved SHA into git-payload builds | The codeload tarball has no `.git`, so `write-build-stamp.mjs` found no commit and `/api/health` reported `commit: null`. `installGitPayload` now sets `PAPERCLIP_BUILD_COMMIT` to the resolved SHA for every build step, so `dist/build-info.json` carries it and health shows the live sha. | r1883 (cto-wachtrij) | `cli/src/__tests__/install-command.test.ts` | not offered: fork-specific git install |
 
 ## Fork commits per row
 
