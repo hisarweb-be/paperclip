@@ -28,9 +28,12 @@ typecheck for row 35).
 
 ## Review findings that also apply to the fork
 
-The upstream review found gaps that the fork commits still have. The
-upstream branches carry the fixes; the fork needs the same change at the
-next rebase.
+The upstream review found gaps that the fork commits had. All five are
+fixed in the fork on 9 November 2026 (rows 2, 15, 16, 18 as the upstream
+fix commits, row 10 reworked: the live-run check is repeated under the
+issue write lock and shares `runHoldsIssueLock` with the route). Each
+item below keeps the finding for the rebase, where the upstream branches
+replace these fork commits.
 
 - Row 2 (55e3455e0): an import that goes over the budget still writes its
   UI parser to the cache when it finishes later, so it can replace a parser
