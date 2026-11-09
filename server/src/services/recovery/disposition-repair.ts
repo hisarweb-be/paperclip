@@ -100,6 +100,9 @@ export async function findLastDispositionRepairWakeAt(
         eq(agentWakeupRequests.reason, "issue_disposition_repair"),
         sql`${agentWakeupRequests.status} <> 'skipped'`,
         sql`${agentWakeupRequests.payload} ->> 'issueId' = ${input.issueId}`,
+        // HIS-8397: only wakes that carried a task key count toward the window; payloads
+        // without one were dropped by the wake gate and never reached an agent.
+        sql`coalesce(${agentWakeupRequests.contextSnapshot} ->> 'taskKey', ${agentWakeupRequests.payload} ->> 'taskKey', ${agentWakeupRequests.payload} ->> 'taskId') ~ '[^[:space:]]'`,
       ),
     )
     .orderBy(sql`${agentWakeupRequests.createdAt} desc`)
@@ -279,4 +282,86 @@ export async function collectDispositionRepairSourceState(
     hasDurableWaitingPath: durablePathReason !== null,
     durablePathReason,
   };
+}
+
+/**
+ * HIS-8150 / HIS-8397 (server rule, wake storm): a disposition repair wake is only useful
+ * when it carries the issue it repairs. A wake whose context snapshot has no task key
+ * (`taskKey`) and no fallback `payload.taskKey` / `payload.taskId` cannot be acted on and
+ * burns a full run. The predicate is pure (no I/O) and mirrors the tested rule in
+ * `plugins/zelfherstel/wekdemper.mjs` (`magWekkenDispositie`).
+ */
+export const ISSUE_DISPOSITION_REPAIR_WAKE_REASON = "issue_disposition_repair";
+
+export function readNonBlankString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+export function dispositionRepairTaskKey(input: {
+  contextSnapshot?: unknown;
+  payload?: unknown;
+}): string | null {
+  const context =
+    input.contextSnapshot && typeof input.contextSnapshot === "object"
+      ? (input.contextSnapshot as Record<string, unknown>)
+      : null;
+  if (context) {
+    const direct = readNonBlankString(context.taskKey);
+    if (direct) return direct;
+    const snapshot = context.contextSnapshot;
+    if (snapshot && typeof snapshot === "object") {
+      const nested = readNonBlankString((snapshot as Record<string, unknown>).taskKey);
+      if (nested) return nested;
+    }
+  }
+  const payload =
+    input.payload && typeof input.payload === "object" ? (input.payload as Record<string, unknown>) : null;
+  if (payload) {
+    return readNonBlankString(payload.taskKey) ?? readNonBlankString(payload.taskId);
+  }
+  return null;
+}
+
+/**
+ * HIS-8150 / HIS-8397: true when a wake may be delivered. A disposition repair wake without
+ * a resolvable task key is dropped before it is persisted; every other wake reason passes.
+ * `switchOn` is read per company from `settings/tokenwacht.json` by the caller, so the rule
+ * can be rolled back without a deploy.
+ */
+export function magWekkenDispositie(input: {
+  wakeReason?: string | null;
+  contextSnapshot?: unknown;
+  payload?: unknown;
+  switchOn?: boolean;
+  now?: Date;
+  lastWakeAt?: Date | null;
+  windowMs?: number;
+}): { mag: boolean; reden: string; taak: string | null } {
+  const taak = dispositionRepairTaskKey(input);
+  if (input.switchOn === false) return { mag: true, reden: "schakelaar uit", taak };
+  if (input.wakeReason !== ISSUE_DISPOSITION_REPAIR_WAKE_REASON) return { mag: true, reden: "andere wekreden", taak };
+  if (!taak) return { mag: false, reden: "geen taakcontext", taak: null };
+  if (input.lastWakeAt) {
+    const now = (input.now ?? new Date()).getTime();
+    const age = now - input.lastWakeAt.getTime();
+    if (age >= 0 && age < (input.windowMs ?? DISPOSITION_REPAIR_WAKE_WINDOW_MS)) {
+      return { mag: false, reden: "kaart had al een wekking binnen het venster", taak };
+    }
+  }
+  return { mag: true, reden: "taakcontext aanwezig", taak };
+}
+
+/** HIS-8397: per issue at most one disposition repair wake per 6 hours; a new fingerprint still gets one. */
+export const DISPOSITION_REPAIR_WAKE_WINDOW_MS = 6 * 60 * 60_000;
+
+export function dispositionRepairWindowActive(input: {
+  newlyWokenFingerprint: boolean;
+  lastWakeAt: Date | null;
+  now?: Date;
+  windowMs?: number;
+}): boolean {
+  if (input.newlyWokenFingerprint || !input.lastWakeAt) return false;
+  const now = (input.now ?? new Date()).getTime();
+  const age = now - input.lastWakeAt.getTime();
+  return age >= 0 && age < (input.windowMs ?? DISPOSITION_REPAIR_WAKE_WINDOW_MS);
 }
