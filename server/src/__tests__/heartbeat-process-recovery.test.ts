@@ -318,6 +318,13 @@ function isPidAlive(pid: number | null | undefined) {
   }
 }
 
+// waitForValue and the adapter-start race return as soon as their condition
+// holds, so a generous deadline costs nothing on the happy path. The old 3 s
+// deadline was shorter than the cold first-run module transform and failed
+// under load. waitForPidExit and waitForRunToSettle keep their short defaults:
+// several tests ignore their result and rely on them giving up quickly.
+const WAIT_DEADLINE_MS = 15_000;
+
 async function waitForPidExit(pid: number, timeoutMs = 2_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -344,7 +351,7 @@ async function waitForRunToSettle(
 
 async function waitForValue<T>(
   read: () => Promise<T | null | undefined>,
-  timeoutMs = 3_000,
+  timeoutMs = WAIT_DEADLINE_MS,
 ) {
   const deadline = Date.now() + timeoutMs;
   let latest: T | null | undefined = null;
@@ -1015,7 +1022,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
               reject(
                 new Error("Timed out waiting for adapter execution to start"),
               ),
-            3_000,
+            WAIT_DEADLINE_MS,
           );
         }),
       ]);
