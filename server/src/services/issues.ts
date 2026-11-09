@@ -29,6 +29,7 @@ import { Buffer } from "node:buffer";
 import { isDeepStrictEqual } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
 import { isExplicitContinuationRetryClaim } from "./explicit-continuation-retry-claim.js";
+import { runHoldsIssueLock } from "./issue-run-lock.js";
 import { markdownToPlainText, parseMarkdown } from "chat";
 import {
   and,
@@ -10870,6 +10871,8 @@ export function issueService(db: Db) {
         workspaceSelectionActor?: AuthorizationActor;
         expectedExecutionPolicy?: typeof issues.$inferInsert.executionPolicy;
         expectedStatusVersion?: number;
+        /** Recheck under the write lock that no run holds a peer-written in_progress issue. */
+        peerRunLockGuard?: boolean;
       },
       dbOrTx: any = db,
       postCommitActivityPublications?: ActivityPublication[],
@@ -10921,6 +10924,7 @@ export function issueService(db: Db) {
         workspaceSelectionActor,
         expectedExecutionPolicy,
         expectedStatusVersion,
+        peerRunLockGuard,
         ...issueData
       } = data;
       if (expectedStatusVersion !== undefined && (
@@ -11181,6 +11185,26 @@ export function issueService(db: Db) {
           .for("update")
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
+        if (
+          peerRunLockGuard &&
+          receiptExisting.status === "in_progress" &&
+          receiptExisting.assigneeAgentId &&
+          receiptExisting.assigneeAgentId !== actorAgentId
+        ) {
+          const runIds = [...new Set(
+            [receiptExisting.checkoutRunId, receiptExisting.executionRunId].filter((runId): runId is string => !!runId),
+          )];
+          for (const runId of runIds) {
+            const run = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).for("update")
+              .then((rows: Array<typeof heartbeatRuns.$inferSelect>) => rows[0] ?? null);
+            if (runHoldsIssueLock(receiptExisting, run)) {
+              throw conflict("Another agent's run holds this issue; comment instead", {
+                code: "issue_write_assignee_run_lock",
+                issueId: id,
+              });
+            }
+          }
+        }
         if (actorRunId) await assertNoCaseHandoffMutation(tx, actorRunId, id);
         if (expectedStatusVersion !== undefined && (
           receiptExisting.statusVersion !== expectedStatusVersion || receiptExisting.status !== "backlog"
@@ -11685,14 +11709,9 @@ export function issueService(db: Db) {
       // external-transaction caller (dbOrTx !== db) has no post-commit point
       // here; its card is still recorded by the round-based path.
       if (dbOrTx === db) {
-        const committedStatus = (result as { status?: string } | null | undefined)
-          ?.status;
-        const committed = result as { id?: string; companyId?: string } | null;
-        if (
-          committed?.id &&
-          committed.companyId &&
-          (committedStatus === "done" || committedStatus === "cancelled")
-        ) {
+        const committed = result as { id?: string; companyId?: string; status?: string } | null;
+        const committedStatus = committed?.status;
+        if (committed?.id && committed.companyId && committedStatus === "done") {
           try {
             await taskWatchdogService(db).recordTerminalReviewDisposition(
               committed.companyId,

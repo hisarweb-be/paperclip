@@ -197,6 +197,7 @@ function issueUpdateWithReceipt(issue: ReturnType<typeof makeIssue>, patch: Reco
     actorRunStopId: _actorRunStopId,
     actorUserId: _actorUserId,
     workspaceSelectionActor: _workspaceSelectionActor,
+    peerRunLockGuard: _peerRunLockGuard,
     blockedByIssueIds: _blockedByIssueIds,
     ...issuePatch
   } = patch;
