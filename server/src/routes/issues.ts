@@ -388,6 +388,7 @@ import {
   queuedCommentIdsFromWakePayload,
   withQueuedCommentIdsInWakePayload,
 } from "../services/issue-queued-comment-queue.js";
+import { runHoldsIssueLock } from "../services/issue-run-lock.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -5634,7 +5635,12 @@ export function issueRoutes(
   // in_progress by a run that fell away (never terminalized, or already
   // terminal) must not freeze the task for every writer but its assignee.
   async function hasLiveRunLock(
-    issue: { checkoutRunId?: string | null; executionRunId?: string | null },
+    issue: {
+      id: string;
+      companyId: string;
+      checkoutRunId?: string | null;
+      executionRunId?: string | null;
+    },
   ) {
     const runIds = [...new Set(
       [issue.checkoutRunId, issue.executionRunId].filter(
@@ -5644,9 +5650,9 @@ export function issueRoutes(
     for (const runId of runIds) {
       const run = await heartbeat.getRun(runId);
       if (
-        run &&
-        REASSIGNMENT_HOLD_RUN_STATUSES.includes(
-          run.status as (typeof REASSIGNMENT_HOLD_RUN_STATUSES)[number],
+        runHoldsIssueLock(
+          { id: issue.id, companyId: issue.companyId, executionRunId: issue.executionRunId ?? null },
+          run as Parameters<typeof runHoldsIssueLock>[1],
         )
       ) {
         return true;
@@ -5672,7 +5678,11 @@ export function issueRoutes(
       /** Used only to name the task in denial copy (plan §6). */
       identifier?: string | null;
     },
-    options: { allowVisibleIssueWrite?: boolean } = {},
+    options: {
+      allowVisibleIssueWrite?: boolean;
+      /** Called when a peer write passes only because no run holds the lock. */
+      onPeerWriteWithoutRunLock?: () => void;
+    } = {},
   ) {
     if (!(await assertIssueReadAllowed(req, res, issue))) return false;
     if (req.actor.type !== "agent") return true;
@@ -5749,7 +5759,10 @@ export function issueRoutes(
         // Only a live run holds it: a board left in_progress by a run that
         // fell away stays writable, or the task is frozen for everyone but a
         // sleeping assignee.
-        if (!(await hasLiveRunLock(issue))) return true;
+        if (!(await hasLiveRunLock(issue))) {
+          options.onPeerWriteWithoutRunLock?.();
+          return true;
+        }
         return denyIssueWrite(
           req,
           res,
@@ -13813,11 +13826,17 @@ export function issueRoutes(
         );
         return;
       }
+      let peerRunLockGuard = false;
       const issueMutationAccess = await assertAgentIssueMutationAllowed(
         req,
         res,
         existing,
-        { allowVisibleIssueWrite: true },
+        {
+          allowVisibleIssueWrite: true,
+          onPeerWriteWithoutRunLock: () => {
+            peerRunLockGuard = true;
+          },
+        },
       );
       if (!issueMutationAccess) return;
       if (req.body.comment && !(await assertBoardCommentNotPaused(req, res, existing))) return;
@@ -14647,6 +14666,7 @@ export function issueRoutes(
         actorRunId: actor.agentId ? actor.runId : null,
         actorRunStopId: actor.agentId && interruptedRunId === actor.runId ? issueMutationStopId : null,
         actorUserId: actor.actorType === "user" ? actor.actorId : null,
+        peerRunLockGuard,
       };
       const shouldCollectCompletionPublication =
         actor.actorType === "user" &&
