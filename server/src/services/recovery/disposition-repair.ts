@@ -66,6 +66,48 @@ function boundedRecoveryDelayMs(
   return { baseDelayMs, jitterMs, delayMs: baseDelayMs + jitterMs };
 }
 
+/**
+ * Fork F1 (CTO wake storm): the source-state fingerprint also covers work-product and
+ * interaction timestamps, so any productive run resets the per-fingerprint attempt counter
+ * and grants a fresh, undelayed first attempt. Without a per-issue brake that produced up to
+ * 12 repair wakes per issue per day. A first attempt on a new fingerprint is deferred while
+ * the issue already received a repair wake inside the cooldown window; later sweeps pick it up.
+ */
+export const DISPOSITION_REPAIR_COOLDOWN_MS = 15 * 60_000;
+
+export function dispositionRepairCooldownActive(input: {
+  sameFingerprintAttempt: number;
+  lastRepairWakeAt: Date | null;
+  now?: Date;
+  cooldownMs?: number;
+}): boolean {
+  if (input.sameFingerprintAttempt > 0 || !input.lastRepairWakeAt) return false;
+  const now = (input.now ?? new Date()).getTime();
+  const age = now - input.lastRepairWakeAt.getTime();
+  return age >= 0 && age < (input.cooldownMs ?? DISPOSITION_REPAIR_COOLDOWN_MS);
+}
+
+export async function findLastDispositionRepairWakeAt(
+  db: Db,
+  input: { companyId: string; issueId: string },
+): Promise<Date | null> {
+  const row = await db
+    .select({ createdAt: agentWakeupRequests.createdAt })
+    .from(agentWakeupRequests)
+    .where(
+      and(
+        eq(agentWakeupRequests.companyId, input.companyId),
+        eq(agentWakeupRequests.reason, "issue_disposition_repair"),
+        sql`${agentWakeupRequests.status} <> 'skipped'`,
+        sql`${agentWakeupRequests.payload} ->> 'issueId' = ${input.issueId}`,
+      ),
+    )
+    .orderBy(sql`${agentWakeupRequests.createdAt} desc`)
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  return row?.createdAt ?? null;
+}
+
 export function dispositionRepairDelayMs(attempt: number, fingerprint: string) {
   return boundedRecoveryDelayMs(
     attempt,

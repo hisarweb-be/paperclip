@@ -168,6 +168,8 @@ import {
   collectDispositionRepairSourceState,
   dispositionRepairDelayMs,
   DISPOSITION_REPAIR_MAX_ATTEMPTS,
+  dispositionRepairCooldownActive,
+  findLastDispositionRepairWakeAt,
 } from "./disposition-repair.js";
 import {
   createActiveRunWatchdog,
@@ -4047,6 +4049,19 @@ export function recoveryService(
         legacyEpisode: episode,
       });
       return escalated ? "escalated" : "skipped";
+    }
+
+    if (
+      !episode &&
+      dispositionRepairCooldownActive({
+        sameFingerprintAttempt,
+        lastRepairWakeAt: await findLastDispositionRepairWakeAt(db, {
+          companyId: current.companyId,
+          issueId: current.id,
+        }),
+      })
+    ) {
+      return "skipped";
     }
 
     const nextAttempt = sameFingerprintAttempt + 1;

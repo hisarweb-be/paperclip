@@ -4,6 +4,8 @@ import { classifyContinuationFailure } from "../services/recovery/service.ts";
 import {
   DISPOSITION_REPAIR_BASE_DELAYS_MS,
   DISPOSITION_REPAIR_MAX_ATTEMPTS,
+  DISPOSITION_REPAIR_COOLDOWN_MS,
+  dispositionRepairCooldownActive,
   dispositionRepairDelayMs,
 } from "../services/recovery/disposition-repair.ts";
 
@@ -49,5 +51,29 @@ describe("owner-sticky disposition repair", () => {
     expect(timings[4]?.jitterMs).toBeLessThanOrEqual(48_000);
     expect(dispositionRepairDelayMs(2, fingerprint)).toEqual(timings[1]);
     expect(() => dispositionRepairDelayMs(6, fingerprint)).toThrow(/Invalid disposition repair attempt/);
+  });
+});
+
+describe("disposition repair per-issue cooldown", () => {
+  const now = new Date("2026-11-09T10:00:00.000Z");
+  const ago = (ms: number) => new Date(now.getTime() - ms);
+
+  it("defers a fresh-fingerprint first attempt when the issue got a repair wake within 15 minutes", () => {
+    expect(DISPOSITION_REPAIR_COOLDOWN_MS).toBe(15 * 60_000);
+    expect(dispositionRepairCooldownActive({ sameFingerprintAttempt: 0, lastRepairWakeAt: ago(60_000), now })).toBe(true);
+  });
+
+  it("allows the wake once the window has passed or when there was no earlier wake", () => {
+    expect(dispositionRepairCooldownActive({ sameFingerprintAttempt: 0, lastRepairWakeAt: ago(15 * 60_000), now })).toBe(false);
+    expect(dispositionRepairCooldownActive({ sameFingerprintAttempt: 0, lastRepairWakeAt: null, now })).toBe(false);
+  });
+
+  it("never blocks the bounded retries of the same fingerprint", () => {
+    expect(dispositionRepairCooldownActive({ sameFingerprintAttempt: 1, lastRepairWakeAt: ago(1_000), now })).toBe(false);
+    expect(dispositionRepairCooldownActive({ sameFingerprintAttempt: 4, lastRepairWakeAt: ago(1_000), now })).toBe(false);
+  });
+
+  it("ignores a wake timestamp in the future (clock skew)", () => {
+    expect(dispositionRepairCooldownActive({ sameFingerprintAttempt: 0, lastRepairWakeAt: new Date(now.getTime() + 5_000), now })).toBe(false);
   });
 });
