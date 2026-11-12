@@ -30,7 +30,7 @@ Rol: CTO en hoofdarchitect Bureau V2, volledig autonoom. Dit bestand is ook het 
 | Lumia levert claude-fable-5-2 | LiteLLM-modelgroep | `export/litellm-config.yaml` | Echte aanroep via `127.0.0.1:4000` (12 nov): `claude-fable-5-2` -> **HTTP 400** "Invalid model name passed in model=claude-fable-5-2. Call `/v1/models`"; `claude-fable-5-1` -> **200** met `"model":"claude-fable-5-1"`; `claude-opus-5-5` -> **200** | ONTBREEKT (Lumia levert 5.2 niet; 5.1 werkt) |
 
 ## DEEL 2: gaten (stand)
-- **A. Mapvertrouwen**: ONTBREEKT -> bouwen (controle zonder model in de agentstart/pre-flight).
+- **A. Mapvertrouwen**: was ONTBREEKT, nu GEBOUWD in PR 2760 (tak `cto/4laags-mapvertrouwen`, werkboom `D:/paperclip/.claude/worktrees/4laags-gaten-groen`): `plugins/agentgebruiker/mapvertrouwen.mjs` met check/zet/lijst op `~/.claude.json`, pre-flight in `claude-als-agent`, regel in `controle.sh`, toets `mapvertrouwen.test.mjs` (`node --test`: pass 1, fail 0). Volgende stap: CI groen, zelf samenvoegen, daarna `controle.sh` nameten.
 - **B. Nieuwe Lumia-modellen**: fable-5-2 wordt door Lumia niet geleverd (HTTP 400 op een echte aanroep). De radar draait niet (laatste run 22 okt). Eerste werk: radar/keurbank-timer herstellen, dan de Lumia-modellijst via LiteLLM laten meelezen.
 - **C. 429-terugval**: config aanwezig; gesimuleerde 429 nog te doen.
 - **D. Invoernorm**: meting is 0 % van 208 kaarten volledig met de velden Doel, Bewijs, Maat, Modus. Dat is ver onder de norm van 80 %, dus overschakelen van meldstand naar weigeren levert nu een bordstilstand op: besluit voorlopig **niet weigeren**; eerst de aanmaakpoort de vier velden zelf laten invullen (net als `modusVoor`), daarna opnieuw meten.
@@ -52,3 +52,8 @@ Zie `opdrachten/cto-wachtrij.md` voor wat blijft liggen. Hier de stand per FOUT-
 - Tijdschakelaar: tot 17 nov 05:00 voert dit venster zelf uit op het abonnement (geen lumia.sh/glm.sh/ds.sh).
 - `MSYS_NO_PATHCONV=1` voor WSL-paden; lange runs met `run_in_background` en logbestand.
 - Metingen van dit venster staan in `D:/tmp/win/fable-meting.txt` (fable-5-2 400, fable-5-1 200, opus-5-5 200).
+
+## Stand opvolger 12 nov (na het eerste kindvenster)
+- Kindvenster `local_4b537948-2771-410b-a3d2-306bff4d8797` ("4laags gaten en groen 2", model `claude-opus-5-5-thinking`) bouwde deel 2A, commit `46986095f` in werkboom `D:/paperclip/.claude/worktrees/4laags-gaten-groen`, en stierf daarna op `API Error: 402 Insufficient Balance` (`claude-opus-5-5-thinking`, terugval `claude-opus-5-5` en `claude-sonnet-5-5-max` ook leeg). Les: start geen nieuw venster op een thinking-model zonder tegoed.
+- Dat werk staat als PR 2760 open (tak `cto/4laags-mapvertrouwen`). Deel 2A is dus gebouwd en getoetst; wacht nog op groene CI en samenvoegen.
+- Nog open: 2B (radar/keurbank herstellen en Lumia-lijst via LiteLLM lezen), 2C (gesimuleerde 429), 2D (aanmaakpoort vult Doel/Bewijs/Maat/Modus zelf, daarna nameten) en heel DEEL 3.
