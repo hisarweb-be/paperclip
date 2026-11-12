@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { readProcessStartedAt } from "./hot-restart.js";
 
@@ -14,6 +14,10 @@ export function isConversationAdapter(adapterType: string): boolean {
 }
 
 export const CONVERSATION_CONTINUATION_POLICY = "continue_conversation_v1";
+
+// A stored uuid rendered as text. Used to guard a text-to-uuid cast so that a
+// malformed value can never abort the whole query.
+const UUID_TEXT_PATTERN = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$";
 
 export function hasConversationContinuationPolicy(result: Record<string, unknown> | null | undefined): boolean {
   return result?.workspaceRestoreFailure !== "restore_unsafe_archive" && result?.conversationContinuation === CONVERSATION_CONTINUATION_POLICY;
@@ -65,11 +69,20 @@ export async function runUsedConversationAdapter(db: Db, run: typeof heartbeatRu
 export function conversationRecoveryActionPredicate() {
   return and(
     eq(issueRecoveryActions.cause, "legacy_execution_requires_reconciliation"),
+    // Both sides of the run lookup compare in uuid form on purpose. `id::text = evidence->>'runId'`
+    // matches text to text, so the planner cannot use heartbeat_runs_pkey and the predicate has to
+    // lean on a text index of the whole id column (HIS-7401). The guards keep the casts total:
+    // measured on bureau-01 (6 nov 2026) all 3 668 stored runIds and all 52 123 stored issueIds are
+    // valid uuids, and a value that is not one now yields NULL instead of an exception.
     sql`exists (
       select 1 from ${heartbeatRuns}
       where ${heartbeatRuns.companyId} = ${issueRecoveryActions.companyId}
-        and ${heartbeatRuns.id}::text = ${issueRecoveryActions.evidence}->>'runId'
-        and coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueRecoveryActions.sourceIssueId}::text
+        and ${heartbeatRuns.id} = case
+          when ${issueRecoveryActions.evidence}->>'runId' ~ ${UUID_TEXT_PATTERN}
+          then (${issueRecoveryActions.evidence}->>'runId')::uuid end
+        and coalesce(${heartbeatRuns.nativeIssueId}, case
+          when ${heartbeatRuns.contextSnapshot}->>'issueId' ~ ${UUID_TEXT_PATTERN}
+          then (${heartbeatRuns.contextSnapshot}->>'issueId')::uuid end) = ${issueRecoveryActions.sourceIssueId}
         and ${heartbeatRuns.runtimeMode} = 'legacy'
         and coalesce(${heartbeatRuns.resultJson}->>'workspaceRestoreFailure', '') <> 'restore_unsafe_archive'
         and ${inArray(heartbeatRuns.status, ['failed', 'timed_out', 'interrupted', 'cancelled'])}
@@ -108,7 +121,15 @@ export async function getConversationOwnershipBlocker(db: Db, companyId: string,
     .where(and(
       eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.runtimeMode, "legacy"),
       conversationRunPredicate(),
-      sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueId}`,
+      // `coalesce(native_issue_id::text, context_snapshot->>'issueId') = $1` is not sargable: the
+      // coalesce and the text cast hide both columns from the planner, so this ran as a Parallel
+      // Seq Scan over the whole table on every conversation turn (measured on bureau-01, 6 nov 2026:
+      // 498.970 ms, 17 563 rows removed by filter). Split into the two indexable halves; the
+      // semantics are identical because `native_issue_id` is null in exactly the second branch.
+      or(
+        eq(heartbeatRuns.nativeIssueId, issueId),
+        and(isNull(heartbeatRuns.nativeIssueId), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`),
+      ),
       inArray(heartbeatRuns.status, ["failed", "timed_out", "interrupted", "cancelled"]),
       or(isNotNull(heartbeatRuns.processPid), isNotNull(heartbeatRuns.processGroupId), activeLease),
     )).orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id));
